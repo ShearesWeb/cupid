@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::models::{Applicant, CCAIdx, Position};
 
+pub mod appeals;
 pub mod db;
 pub mod mock;
 
