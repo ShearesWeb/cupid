@@ -3,9 +3,13 @@ name = "cupid"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-rand = "0.10.1"
-
 [[bin]]
 name = "cupid"
 path = "src/main.rs"
+
+[dependencies]
+csv = "1.4.0"
+native-tls = "0.2.18"
+postgres = "0.19.14"
+postgres-native-tls = "0.5.3"
+serde = { version = "1.0.228", features = ["derive"] }
