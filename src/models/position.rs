@@ -12,6 +12,8 @@ pub struct CCAIdx(pub i32);
 
 /// CCA Positions
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// Variants share the "Comm" suffix by design: block / main / sub committee.
+#[allow(clippy::enum_variant_names)]
 pub enum PositionType {
     BlockComm,
     MainComm,

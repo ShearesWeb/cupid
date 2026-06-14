@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 
-use crate::models::{Applicant, ApplicantIdx, CCAIdx, Position, PositionIdx, PositionType};
 use super::DataSourcePool;
+use crate::models::{Applicant, ApplicantIdx, CCAIdx, Position, PositionIdx, PositionType};
 
 /// One row of the `cca_preference_pairs` view.
 #[derive(Debug, Clone)]
@@ -62,8 +62,11 @@ pub fn assemble(rows: Vec<PrefRow>) -> DataSourcePool {
             continue; // NULL capacity -> skip
         };
         acc.ranked.sort_by_key(|&(_, rank)| rank);
-        let ranking: Vec<ApplicantIdx> =
-            acc.ranked.iter().map(|&(uid, _)| ApplicantIdx(uid)).collect();
+        let ranking: Vec<ApplicantIdx> = acc
+            .ranked
+            .iter()
+            .map(|&(uid, _)| ApplicantIdx(uid))
+            .collect();
         positions.push(Position::new(
             position_id,
             acc.cca_id,
@@ -89,10 +92,10 @@ pub fn assemble(rows: Vec<PrefRow>) -> DataSourcePool {
             email: r.user_email.clone(),
             prefs: Vec::new(),
         });
-        if let Some(rank) = r.user_rank {
-            if kept.contains(&r.position_id) {
-                acc.prefs.push((r.position_id, rank));
-            }
+        if let Some(rank) = r.user_rank
+            && kept.contains(&r.position_id)
+        {
+            acc.prefs.push((r.position_id, rank));
         }
     }
 
@@ -107,7 +110,8 @@ pub fn assemble(rows: Vec<PrefRow>) -> DataSourcePool {
     // --- CCAs: id -> name ---
     let mut ccas: HashMap<CCAIdx, String> = HashMap::new();
     for r in &rows {
-        ccas.entry(CCAIdx(r.cca_id)).or_insert_with(|| r.cca_name.clone());
+        ccas.entry(CCAIdx(r.cca_id))
+            .or_insert_with(|| r.cca_name.clone());
     }
 
     DataSourcePool::new(applicants, positions, ccas)
@@ -217,7 +221,10 @@ mod tests {
             row(3, 10, None, Some(1), "maincomm", Some(2), 5),
         ];
         let pool = assemble(rows);
-        assert_eq!(pool.positions()[0].ranking(), &[ApplicantIdx(3), ApplicantIdx(1)]);
+        assert_eq!(
+            pool.positions()[0].ranking(),
+            &[ApplicantIdx(3), ApplicantIdx(1)]
+        );
     }
 
     #[test]
@@ -228,7 +235,11 @@ mod tests {
             row(1, 30, Some(3), Some(1), "member", Some(1), 5), // dropped type
         ];
         let pool = assemble(rows);
-        let ann = pool.applicants().iter().find(|a| a.id == ApplicantIdx(1)).unwrap();
+        let ann = pool
+            .applicants()
+            .iter()
+            .find(|a| a.id == ApplicantIdx(1))
+            .unwrap();
         assert_eq!(ann.preferences(), &[PositionIdx(20), PositionIdx(10)]);
     }
 
