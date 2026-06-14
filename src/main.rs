@@ -1,4 +1,5 @@
 mod algorithm;
+mod data;
 mod models;
 
 use algorithm::run;
