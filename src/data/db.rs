@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::error::Error;
 
 use crate::models::{Applicant, ApplicantIdx, CCAIdx, Position, PositionIdx, PositionType};
 use super::DataSourcePool;
@@ -112,6 +113,45 @@ pub fn assemble(rows: Vec<PrefRow>) -> DataSourcePool {
     DataSourcePool::new(applicants, positions, ccas)
 }
 
+/// Load the corpus from the production database.
+///
+/// Queries the `cca_preference_pairs` view (service-role only) over `DATABASE_URL`,
+/// maps rows to `PrefRow`, and assembles. The Postgres enum `position_type` is cast
+/// to text so it deserializes as a `String`.
+pub fn load() -> Result<DataSourcePool, Box<dyn Error>> {
+    let url = std::env::var("DATABASE_URL")
+        .map_err(|_| "DATABASE_URL must be set when PRODUCTION is set")?;
+
+    let tls = postgres_native_tls::MakeTlsConnector::new(native_tls::TlsConnector::new()?);
+    let mut client = postgres::Client::connect(&url, tls)?;
+
+    let rows = client.query(
+        "SELECT user_id, position_id, user_rank, position_rank, user_name, user_email, \
+                position_name, position_type::text AS position_type, capacity, cca_id, cca_name \
+         FROM cca_preference_pairs",
+        &[],
+    )?;
+
+    let parsed: Vec<PrefRow> = rows
+        .iter()
+        .map(|row| PrefRow {
+            user_id: row.get("user_id"),
+            position_id: row.get("position_id"),
+            user_rank: row.get("user_rank"),
+            position_rank: row.get("position_rank"),
+            user_name: row.get("user_name"),
+            user_email: row.get("user_email"),
+            position_name: row.get("position_name"),
+            position_type: row.get("position_type"),
+            capacity: row.get("capacity"),
+            cca_id: row.get("cca_id"),
+            cca_name: row.get("cca_name"),
+        })
+        .collect();
+
+    Ok(assemble(parsed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,5 +230,13 @@ mod tests {
         let rows = vec![row(1, 10, Some(1), Some(1), "maincomm", Some(1), 7)];
         let pool = assemble(rows);
         assert_eq!(pool.cca_name(CCAIdx(7)), Some("C7"));
+    }
+
+    #[test]
+    #[ignore = "requires a live DATABASE_URL"]
+    fn db_load_against_live_database() {
+        let pool = load().expect("load from DATABASE_URL");
+        // Smoke check: a real run should produce a corpus we can match over.
+        assert!(!pool.positions().is_empty(), "expected some positions");
     }
 }
