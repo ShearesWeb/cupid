@@ -124,7 +124,7 @@ pub fn assemble(rows: Vec<PrefRow>) -> DataSourcePool {
 /// to text so it deserializes as a `String`.
 pub fn load() -> Result<DataSourcePool, Box<dyn Error>> {
     let url = std::env::var("DATABASE_URL")
-        .map_err(|_| "DATABASE_URL must be set when PRODUCTION is set")?;
+        .map_err(|_| "DATABASE_URL must be set")?;
 
     let tls = postgres_native_tls::MakeTlsConnector::new(native_tls::TlsConnector::new()?);
     let mut client = postgres::Client::connect(&url, tls)?;

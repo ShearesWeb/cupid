@@ -61,37 +61,7 @@ mod tests {
         );
     }
 
-    use crate::data::mock;
     use crate::models::PositionType::{BlockComm, MainComm, SubComm};
-    use std::collections::HashMap;
-
-    #[test]
-    fn mock_run_respects_capacity_and_quota() {
-        let pool = mock::load();
-        let result = run(pool.applicants(), pool.positions(), &Appeals::new());
-
-        // Capacity: no position seats more than its capacity.
-        for p in pool.positions() {
-            assert!(result.for_position(p.id).len() <= p.capacity, "position {} over capacity", p.id.0);
-        }
-
-        // Quota: per applicant, maincomm+blockcomm <= 2, subcomm <= 3, not (maincomm>=1 && subcomm>=2).
-        let type_of: HashMap<PositionIdx, _> =
-            pool.positions().iter().map(|p| (p.id, p.position_type)).collect();
-        for a in pool.applicants() {
-            let (mut block, mut main, mut sub) = (0, 0, 0);
-            for pid in result.positions_of(a.id) {
-                match type_of[pid] {
-                    BlockComm => block += 1,
-                    MainComm => main += 1,
-                    SubComm => sub += 1,
-                }
-            }
-            assert!(main + block <= 2, "applicant {} over main+block quota", a.id.0);
-            assert!(sub <= 3, "applicant {} over subcomm quota", a.id.0);
-            assert!(!(main >= 1 && sub >= 2), "applicant {} violates main/sub rule", a.id.0);
-        }
-    }
 
     #[test]
     fn appeal_bypasses_quota() {
@@ -131,5 +101,94 @@ mod tests {
 
         let result = run(&applicants, &positions, &Appeals::new());
         assert!(!result.positions_of(ApplicantIdx(1)).contains(&PositionIdx(200)));
+    }
+
+    #[test]
+    fn gs_bumps_weaker_held_seat() {
+        // GS deferred acceptance: a chair-preferred late proposer displaces the seated.
+        // Applicant 2 takes the lone seat first; applicant 1 (chair rank 1) bumps them.
+        let applicants = vec![
+            // 1 first proposes a seat the chair never ranked them for, then the contested M.
+            Applicant::new(1, "Win".into(), "w@x".into(), vec![PositionIdx(40), PositionIdx(30)]),
+            Applicant::new(2, "Lose".into(), "l@x".into(), vec![PositionIdx(30)]),
+        ];
+        let positions = vec![
+            Position::new(30, 1, "M".into(), None, 1, MainComm, vec![ApplicantIdx(1), ApplicantIdx(2)]),
+            Position::new(40, 1, "N".into(), None, 1, MainComm, vec![ApplicantIdx(2)]), // 1 unranked here
+        ];
+
+        let result = run(&applicants, &positions, &Appeals::new());
+        assert!(
+            result.positions_of(ApplicantIdx(1)).contains(&PositionIdx(30)),
+            "chair-preferred applicant 1 should hold M"
+        );
+        assert!(
+            result.positions_of(ApplicantIdx(2)).is_empty(),
+            "applicant 2 should be bumped out of M and hold nothing"
+        );
+    }
+
+    #[test]
+    fn ia_seats_in_chair_order_when_oversubscribed() {
+        // Both rank the same single BlockComm seat at top choice. IA seats the
+        // chair's preferred applicant regardless of proposal order.
+        let applicants = vec![
+            Applicant::new(1, "Top".into(), "t@x".into(), vec![PositionIdx(50)]),
+            Applicant::new(2, "Snd".into(), "s@x".into(), vec![PositionIdx(50)]),
+        ];
+        let positions = vec![Position::new(
+            50, 1, "B".into(), None, 1, BlockComm, vec![ApplicantIdx(1), ApplicantIdx(2)],
+        )];
+
+        let result = run(&applicants, &positions, &Appeals::new());
+        assert_eq!(result.positions_of(ApplicantIdx(1)), &[PositionIdx(50)]);
+        assert!(result.positions_of(ApplicantIdx(2)).is_empty());
+    }
+
+    #[test]
+    fn ia_acceptance_is_permanent_no_bumping() {
+        // Contrast with GS: here the chair PREFERS applicant 2, but applicant 1
+        // claims the seat first (at a better applicant-rank). IA never bumps, so the
+        // later, chair-preferred applicant 2 is turned away.
+        let applicants = vec![
+            Applicant::new(1, "Early".into(), "e@x".into(), vec![PositionIdx(60)]),
+            // 2 wastes rank-0 on a seat that doesn't list them, reaching B one round late.
+            Applicant::new(2, "Late".into(), "l@x".into(), vec![PositionIdx(61), PositionIdx(60)]),
+        ];
+        let positions = vec![
+            Position::new(60, 1, "B".into(), None, 1, BlockComm, vec![ApplicantIdx(2), ApplicantIdx(1)]),
+            Position::new(61, 1, "X".into(), None, 1, BlockComm, vec![]), // ranks nobody
+        ];
+
+        let result = run(&applicants, &positions, &Appeals::new());
+        assert_eq!(
+            result.positions_of(ApplicantIdx(1)),
+            &[PositionIdx(60)],
+            "first claimer keeps the seat under IA permanence"
+        );
+        assert!(
+            result.positions_of(ApplicantIdx(2)).is_empty(),
+            "chair-preferred but late applicant gets no bump in IA"
+        );
+    }
+
+    #[test]
+    fn blockcomm_holdings_carry_into_gs_quota() {
+        // Two BlockComm seats (pass 1) exhaust the main+block <= 2 quota, so the
+        // MainComm proposal in pass 2 is rejected for capacity.
+        let applicants = vec![Applicant::new(
+            1, "Ann".into(), "a@x".into(),
+            vec![PositionIdx(70), PositionIdx(71), PositionIdx(72)],
+        )];
+        let positions = vec![
+            Position::new(70, 1, "B1".into(), None, 1, BlockComm, vec![ApplicantIdx(1)]),
+            Position::new(71, 2, "B2".into(), None, 1, BlockComm, vec![ApplicantIdx(1)]),
+            Position::new(72, 3, "M".into(), None, 1, MainComm, vec![ApplicantIdx(1)]),
+        ];
+
+        let result = run(&applicants, &positions, &Appeals::new());
+        let held = result.positions_of(ApplicantIdx(1));
+        assert!(held.contains(&PositionIdx(70)) && held.contains(&PositionIdx(71)));
+        assert!(!held.contains(&PositionIdx(72)), "main rejected: main+block quota full");
     }
 }

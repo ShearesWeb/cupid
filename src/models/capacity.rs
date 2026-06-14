@@ -111,3 +111,118 @@ impl Appeals {
         self.whitelist.contains(&(applicant, position))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use PositionType::{BlockComm, MainComm, SubComm};
+
+    /// Build a `HeldCounts` directly so each quota rule can be probed in isolation.
+    fn held(block: u8, main: u8, sub: u8) -> HeldCounts {
+        HeldCounts {
+            blockcomm: block,
+            maincomm: main,
+            subcomm: sub,
+            appealed: 0,
+        }
+    }
+
+    #[test]
+    fn empty_can_add_any_type() {
+        let h = HeldCounts::default();
+        assert!(h.can_add(BlockComm));
+        assert!(h.can_add(MainComm));
+        assert!(h.can_add(SubComm));
+    }
+
+    #[test]
+    fn main_plus_block_caps_at_two() {
+        // One main + one block = 2 held; a third of either kind tips over.
+        let h = held(1, 1, 0);
+        assert!(!h.can_add(MainComm), "main+block would be 3");
+        assert!(!h.can_add(BlockComm), "main+block would be 3");
+        // Two blocks (no main) leaves room for one sub under the cross rule.
+        assert!(held(2, 0, 0).can_add(SubComm));
+        assert!(!held(2, 0, 0).can_add(BlockComm), "would be 3 block");
+    }
+
+    #[test]
+    fn subcomm_caps_at_three() {
+        assert!(held(0, 0, 2).can_add(SubComm), "third sub is fine");
+        assert!(!held(0, 0, 3).can_add(SubComm), "fourth sub over cap");
+    }
+
+    #[test]
+    fn main_and_two_sub_forbidden() {
+        // The cross rule: holding a main forbids a second subcomm.
+        assert!(!held(0, 1, 1).can_add(SubComm), "1 main + 2 sub banned");
+        assert!(held(0, 1, 0).can_add(SubComm), "1 main + 1 sub allowed");
+        // Mirror: holding two subs forbids taking a main.
+        assert!(!held(0, 0, 2).can_add(MainComm), "2 sub + 1 main banned");
+        // No main: two subs may grow to three.
+        assert!(held(0, 0, 2).can_add(SubComm));
+    }
+
+    #[test]
+    fn store_grant_tracks_each_type() {
+        let mut store = CapacityStore::new();
+        let a = ApplicantIdx(1);
+        store.grant(a, BlockComm, false);
+        store.grant(a, MainComm, false);
+        store.grant(a, SubComm, false);
+        let counts = store.get(a);
+        assert_eq!((counts.blockcomm, counts.maincomm, counts.subcomm), (1, 1, 1));
+    }
+
+    #[test]
+    fn store_revoke_decrements_and_saturates() {
+        let mut store = CapacityStore::new();
+        let a = ApplicantIdx(1);
+        store.grant(a, SubComm, false);
+        store.revoke(a, SubComm, false);
+        assert_eq!(store.get(a).subcomm, 0);
+        // Revoking below zero stays at zero rather than wrapping.
+        store.revoke(a, SubComm, false);
+        assert_eq!(store.get(a).subcomm, 0);
+        // Revoking an applicant with no record at all is a no-op.
+        store.revoke(ApplicantIdx(99), MainComm, false);
+        assert_eq!(store.get(ApplicantIdx(99)), HeldCounts::default());
+    }
+
+    #[test]
+    fn can_grant_delegates_to_quota() {
+        let mut store = CapacityStore::new();
+        let a = ApplicantIdx(1);
+        store.grant(a, MainComm, false);
+        store.grant(a, SubComm, false);
+        // Now 1 main + 1 sub: a second sub is barred by the cross rule...
+        assert!(!store.can_grant(a, SubComm));
+        // ...but a block still fits (main+block = 2, sub = 1).
+        assert!(store.can_grant(a, BlockComm));
+    }
+
+    #[test]
+    fn appealed_grant_is_invisible_to_quota() {
+        // Appealed seats land in their own bucket and never restrict later grants.
+        let mut store = CapacityStore::new();
+        let a = ApplicantIdx(1);
+        store.grant(a, MainComm, true);
+        store.grant(a, MainComm, true);
+        let counts = store.get(a);
+        assert_eq!(counts.appealed, 2);
+        assert_eq!(counts.maincomm, 0, "appealed seats skip the type bucket");
+        // Quota still sees zero real holdings, so a real main remains grantable.
+        assert!(store.can_grant(a, MainComm));
+    }
+
+    #[test]
+    fn appeals_match_exact_pair_only() {
+        let mut appeals = Appeals::new();
+        appeals.grant(ApplicantIdx(1), PositionIdx(10));
+        assert!(appeals.contains(ApplicantIdx(1), PositionIdx(10)));
+        // Same applicant, different position: not exempt.
+        assert!(!appeals.contains(ApplicantIdx(1), PositionIdx(11)));
+        // Different applicant, same position: not exempt.
+        assert!(!appeals.contains(ApplicantIdx(2), PositionIdx(10)));
+    }
+}

@@ -139,3 +139,80 @@ impl MatchResult {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{Ledger, PositionType};
+
+    fn applicant(id: i32, prefs: &[i32]) -> Applicant {
+        Applicant::new(
+            id,
+            format!("A{id}"),
+            format!("a{id}@x"),
+            prefs.iter().map(|&p| PositionIdx(p)).collect(),
+        )
+    }
+
+    fn position(id: i32, cap: usize, ranking: &[i32]) -> Position {
+        Position::new(
+            id,
+            1,
+            format!("P{id}"),
+            None,
+            cap,
+            PositionType::MainComm,
+            ranking.iter().map(|&a| ApplicantIdx(a)).collect(),
+        )
+    }
+
+    /// Applicant 1 holds both positions; applicant 2 holds nothing. M is full, S has a free seat.
+    fn sample() -> (Vec<Applicant>, Vec<Position>, MatchResult) {
+        let applicants = vec![applicant(1, &[10, 20]), applicant(2, &[])];
+        let positions = vec![position(10, 1, &[1]), position(20, 2, &[1])];
+
+        let mut ledger = Ledger::new(Algorithm::GaleShapley);
+        ledger.accept(&applicants[0], &positions[0]);
+        ledger.accept(&applicants[0], &positions[1]);
+        (applicants, positions, ledger.finish())
+    }
+
+    #[test]
+    fn for_applicant_collects_every_seat() {
+        let (_, _, result) = sample();
+        let held: Vec<_> = result
+            .for_applicant(ApplicantIdx(1))
+            .map(|a| a.position_id)
+            .collect();
+        assert_eq!(held.len(), 2);
+        assert!(held.contains(&PositionIdx(10)) && held.contains(&PositionIdx(20)));
+        assert_eq!(result.for_applicant(ApplicantIdx(2)).count(), 0);
+    }
+
+    #[test]
+    fn all_flattens_across_positions() {
+        let (_, _, result) = sample();
+        assert_eq!(result.all().count(), 2);
+    }
+
+    #[test]
+    fn unmatched_lists_applicants_with_no_seat() {
+        let (applicants, _, result) = sample();
+        assert_eq!(result.unmatched(&applicants), vec![ApplicantIdx(2)]);
+    }
+
+    #[test]
+    fn unfilled_reports_only_positions_with_room() {
+        let (_, positions, result) = sample();
+        // M (cap 1) is full and omitted; S (cap 2) has one empty seat.
+        assert_eq!(result.unfilled(&positions), vec![(PositionIdx(20), 1)]);
+    }
+
+    #[test]
+    fn empty_result_queries_are_safe() {
+        let result = MatchResult::default();
+        assert_eq!(result.for_position(PositionIdx(1)), &[]);
+        assert!(result.positions_of(ApplicantIdx(1)).is_empty());
+        assert_eq!(result.all().count(), 0);
+    }
+}

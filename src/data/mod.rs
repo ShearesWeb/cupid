@@ -4,9 +4,8 @@ use crate::models::{Applicant, CCAIdx, Position};
 
 pub mod appeals;
 pub mod db;
-pub mod mock;
 
-/// Owned corpus loaded from a source (mock or db). The owned counterpart to the
+/// Owned corpus loaded from the database. The owned counterpart to the
 /// algorithm-internal, borrowed `Pool<'a>`: `algorithm::run` borrows its slices.
 pub struct DataSourcePool {
     applicants: Vec<Applicant>,

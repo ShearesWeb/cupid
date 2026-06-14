@@ -37,3 +37,34 @@ impl Applicant {
             .map(|i| i + 1)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preference_of_is_one_based() {
+        let a = Applicant::new(
+            1,
+            "Ann".into(),
+            "ann@x".into(),
+            vec![PositionIdx(30), PositionIdx(10), PositionIdx(20)],
+        );
+        assert_eq!(a.preference_of(PositionIdx(30)), Some(1));
+        assert_eq!(a.preference_of(PositionIdx(10)), Some(2));
+        assert_eq!(a.preference_of(PositionIdx(20)), Some(3));
+    }
+
+    #[test]
+    fn preference_of_absent_is_none() {
+        let a = Applicant::new(1, "Ann".into(), "ann@x".into(), vec![PositionIdx(30)]);
+        assert_eq!(a.preference_of(PositionIdx(99)), None);
+    }
+
+    #[test]
+    fn empty_preferences_rank_nothing() {
+        let a = Applicant::new(2, "Ben".into(), "ben@x".into(), vec![]);
+        assert!(a.preferences().is_empty());
+        assert_eq!(a.preference_of(PositionIdx(1)), None);
+    }
+}

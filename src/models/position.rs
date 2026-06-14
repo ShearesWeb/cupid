@@ -104,3 +104,49 @@ impl Position {
         self.position_type.algorithm()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn type_routes_to_algorithm() {
+        assert_eq!(PositionType::BlockComm.algorithm(), Algorithm::ImmediateAcceptance);
+        assert_eq!(PositionType::MainComm.algorithm(), Algorithm::GaleShapley);
+        assert_eq!(PositionType::SubComm.algorithm(), Algorithm::GaleShapley);
+    }
+
+    #[test]
+    fn parse_is_case_insensitive_and_trimmed() {
+        assert_eq!("blockcomm".parse::<PositionType>().unwrap(), PositionType::BlockComm);
+        assert_eq!("  MainComm ".parse::<PositionType>().unwrap(), PositionType::MainComm);
+        assert_eq!("SUBCOMM".parse::<PositionType>().unwrap(), PositionType::SubComm);
+    }
+
+    #[test]
+    fn parse_rejects_unknown() {
+        let err = "exco".parse::<PositionType>().unwrap_err();
+        assert!(err.contains("exco"), "error names the bad input: {err}");
+    }
+
+    #[test]
+    fn inverse_rank_is_one_based_and_lookups_match() {
+        // Chair ranks applicants 7, 3, 9 (best first).
+        let p = Position::new(
+            100,
+            1,
+            "Pos".into(),
+            None,
+            2,
+            PositionType::MainComm,
+            vec![ApplicantIdx(7), ApplicantIdx(3), ApplicantIdx(9)],
+        );
+        assert_eq!(p.rank_of(ApplicantIdx(7)), Some(1));
+        assert_eq!(p.rank_of(ApplicantIdx(3)), Some(2));
+        assert_eq!(p.rank_of(ApplicantIdx(9)), Some(3));
+        // An applicant the chair never listed has no rank.
+        assert_eq!(p.rank_of(ApplicantIdx(42)), None);
+        // The public ranking slice preserves chair order.
+        assert_eq!(p.ranking(), &[ApplicantIdx(7), ApplicantIdx(3), ApplicantIdx(9)]);
+    }
+}

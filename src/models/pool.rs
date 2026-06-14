@@ -47,3 +47,55 @@ impl<'a> Pool<'a> {
         self.positions.values().copied()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::PositionType;
+
+    fn fixture() -> (Vec<Applicant>, Vec<Position>) {
+        let applicants = vec![
+            Applicant::new(1, "Ann".into(), "a@x".into(), vec![]),
+            Applicant::new(2, "Ben".into(), "b@x".into(), vec![]),
+        ];
+        let positions = vec![
+            Position::new(10, 1, "Block".into(), None, 1, PositionType::BlockComm, vec![]),
+            Position::new(20, 1, "Main".into(), None, 1, PositionType::MainComm, vec![]),
+            Position::new(30, 1, "Sub".into(), None, 1, PositionType::SubComm, vec![]),
+        ];
+        (applicants, positions)
+    }
+
+    #[test]
+    fn ia_pool_keeps_only_blockcomm() {
+        let (applicants, positions) = fixture();
+        let pool = Pool::for_algorithm(&applicants, &positions, Algorithm::ImmediateAcceptance);
+        assert_eq!(pool.positions().count(), 1);
+        assert!(pool.position(PositionIdx(10)).is_some(), "blockcomm in scope");
+        assert!(pool.position(PositionIdx(20)).is_none(), "maincomm filtered out");
+        assert!(pool.position(PositionIdx(30)).is_none(), "subcomm filtered out");
+    }
+
+    #[test]
+    fn gs_pool_keeps_main_and_sub() {
+        let (applicants, positions) = fixture();
+        let pool = Pool::for_algorithm(&applicants, &positions, Algorithm::GaleShapley);
+        assert_eq!(pool.positions().count(), 2);
+        assert!(pool.position(PositionIdx(20)).is_some());
+        assert!(pool.position(PositionIdx(30)).is_some());
+        assert!(pool.position(PositionIdx(10)).is_none(), "blockcomm filtered out");
+    }
+
+    #[test]
+    fn every_applicant_is_present_in_each_pool() {
+        // The pool partitions positions by algorithm but never drops applicants.
+        let (applicants, positions) = fixture();
+        for algo in [Algorithm::ImmediateAcceptance, Algorithm::GaleShapley] {
+            let pool = Pool::for_algorithm(&applicants, &positions, algo);
+            assert_eq!(pool.applicants().count(), 2);
+            assert!(pool.applicant(ApplicantIdx(1)).is_some());
+            assert!(pool.applicant(ApplicantIdx(2)).is_some());
+            assert!(pool.applicant(ApplicantIdx(99)).is_none());
+        }
+    }
+}

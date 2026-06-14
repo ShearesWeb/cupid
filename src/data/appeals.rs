@@ -5,10 +5,10 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::models::{Appeals, ApplicantIdx, PositionIdx};
 use super::DataSourcePool;
+use crate::models::{Appeals, ApplicantIdx, PositionIdx};
 
-/// One appeal row: every column matched by name, never id.
+/// One appeal row: every column matched by name, never by database ID.
 #[derive(Debug, Deserialize)]
 pub struct AppealRecord {
     pub applicant_name: String,
@@ -40,7 +40,10 @@ fn parse<R: Read>(reader: R) -> Result<Vec<AppealRecord>, Box<dyn Error>> {
 fn resolve(records: &[AppealRecord], pool: &DataSourcePool) -> Result<Appeals, Box<dyn Error>> {
     let mut by_name: HashMap<String, Vec<ApplicantIdx>> = HashMap::new();
     for a in pool.applicants() {
-        by_name.entry(a.name.trim().to_string()).or_default().push(a.id);
+        by_name
+            .entry(a.name.trim().to_string())
+            .or_default()
+            .push(a.id);
     }
 
     let mut by_cca_pos: HashMap<(String, String), PositionIdx> = HashMap::new();
@@ -124,7 +127,13 @@ mod tests {
             Applicant::new(4, "Cara".into(), "cara@x".into(), vec![]),
         ];
         let positions = vec![Position::new(
-            10, 1, "Head".into(), None, 1, PositionType::MainComm, vec![ApplicantIdx(4)],
+            10,
+            1,
+            "Head".into(),
+            None,
+            1,
+            PositionType::MainComm,
+            vec![ApplicantIdx(4)],
         )];
         let mut ccas = HashMap::new();
         ccas.insert(CCAIdx(1), "Chess".to_string());
@@ -141,28 +150,40 @@ mod tests {
 
     #[test]
     fn resolves_valid_row() {
-        let records = parse(Cursor::new("applicant_name,cca_name,position_name\nCara,Chess,Head\n")).unwrap();
+        let records = parse(Cursor::new(
+            "applicant_name,cca_name,position_name\nCara,Chess,Head\n",
+        ))
+        .unwrap();
         let appeals = resolve(&records, &pool()).unwrap();
         assert!(appeals.contains(ApplicantIdx(4), PositionIdx(10)));
     }
 
     #[test]
     fn unknown_applicant_is_a_problem() {
-        let records = parse(Cursor::new("applicant_name,cca_name,position_name\nZed,Chess,Head\n")).unwrap();
+        let records = parse(Cursor::new(
+            "applicant_name,cca_name,position_name\nZed,Chess,Head\n",
+        ))
+        .unwrap();
         let err = resolve(&records, &pool()).unwrap_err().to_string();
         assert!(err.contains("unknown applicant 'Zed'"), "got: {err}");
     }
 
     #[test]
     fn ambiguous_applicant_is_a_problem() {
-        let records = parse(Cursor::new("applicant_name,cca_name,position_name\nAnn,Chess,Head\n")).unwrap();
+        let records = parse(Cursor::new(
+            "applicant_name,cca_name,position_name\nAnn,Chess,Head\n",
+        ))
+        .unwrap();
         let err = resolve(&records, &pool()).unwrap_err().to_string();
         assert!(err.contains("ambiguous applicant 'Ann'"), "got: {err}");
     }
 
     #[test]
     fn unknown_position_is_a_problem() {
-        let records = parse(Cursor::new("applicant_name,cca_name,position_name\nCara,Chess,Ghost\n")).unwrap();
+        let records = parse(Cursor::new(
+            "applicant_name,cca_name,position_name\nCara,Chess,Ghost\n",
+        ))
+        .unwrap();
         let err = resolve(&records, &pool()).unwrap_err().to_string();
         assert!(err.contains("unknown position 'Ghost'"), "got: {err}");
     }
