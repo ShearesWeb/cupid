@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::models::{Applicant, CCAIdx, Position};
 
 pub mod db;
+pub mod mock;
 
 /// Owned corpus loaded from a source (mock or db). The owned counterpart to the
 /// algorithm-internal, borrowed `Pool<'a>`: `algorithm::run` borrows its slices.
