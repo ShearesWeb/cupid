@@ -13,11 +13,14 @@ pub fn run(pool: &Pool, appeals: &Appeals, store: &mut CapacityStore, ledger: &m
             let Some(&position_idx) = applicant.preferences().get(rank) else {
                 continue;
             };
+            // Any remaining preference counts as progress, so the sweep keeps
+            // advancing past higher-ranked non-GS (blockcomm) positions instead
+            // of stopping early. Mirrors the immediate-acceptance pass.
+            progressed = true;
 
-            // If position is in the pool (GS).
+            // Only propose when this preference is a GS position in scope.
             if let Some(position) = pool.position(position_idx) {
                 propose(applicant, position, appeals, store, ledger);
-                progressed = true;
             }
         }
 
