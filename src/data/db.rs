@@ -132,6 +132,13 @@ pub fn load() -> Result<DataSourcePool, Box<dyn Error>> {
         &[],
     )?;
 
+    // Nullability note: `user_id`/`position_id` are COALESCE(up, pp) over the view's
+    // FULL OUTER JOIN, so at least one side is always present — never NULL. The name/
+    // email/cca columns reach the row via LEFT JOINs on those non-null keys, and the
+    // preference tables FK to users/cca_positions with ON DELETE CASCADE, so the joined
+    // row always exists — also never NULL. Only `user_rank`/`position_rank`/`capacity`
+    // are nullable, and those are the `Option<i32>` fields. Hence the non-Option
+    // `row.get`s below cannot panic on a NULL.
     let parsed: Vec<PrefRow> = rows
         .iter()
         .map(|row| PrefRow {
