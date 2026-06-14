@@ -1,20 +1,11 @@
-mod algorithm;
-mod data;
-mod models;
-mod report;
-
 use std::path::Path;
 
-use data::DataSourcePool;
-use models::Appeals;
+use cupid::data::{self, DataSourcePool};
+use cupid::{algorithm, models::Appeals, report};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // PRODUCTION set -> load from the database; unset -> mock fixtures (the safe default).
-    let pool: DataSourcePool = if std::env::var_os("PRODUCTION").is_some() {
-        data::db::load()?
-    } else {
-        data::mock::load()
-    };
+    // Single source of truth: the production Postgres view. Requires DATABASE_URL.
+    let pool: DataSourcePool = data::db::load()?;
 
     // Appeals are independent of the source: optional CSV, resolved against the corpus.
     let appeals = match std::env::var_os("APPEALS_CSV") {
