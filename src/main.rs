@@ -1,6 +1,7 @@
 mod algorithm;
 mod data;
 mod models;
+mod report;
 
 use algorithm::run;
 use models::{Appeals, Applicant, Position};
