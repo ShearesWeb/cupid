@@ -3,12 +3,26 @@ mod data;
 mod models;
 mod report;
 
-use algorithm::run;
-use models::{Appeals, Applicant, Position};
+use std::path::Path;
 
-fn main() {
-    let applicants: Vec<Applicant> = Vec::new();
-    let positions: Vec<Position> = Vec::new();
-    let appeals = Appeals::new();
-    let _result = run(&applicants, &positions, &appeals);
+use data::DataSourcePool;
+use models::Appeals;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // PRODUCTION set -> load from the database; unset -> mock fixtures (the safe default).
+    let pool: DataSourcePool = if std::env::var_os("PRODUCTION").is_some() {
+        data::db::load()?
+    } else {
+        data::mock::load()
+    };
+
+    // Appeals are independent of the source: optional CSV, resolved against the corpus.
+    let appeals = match std::env::var_os("APPEALS_CSV") {
+        Some(path) => data::appeals::load_and_resolve(Path::new(&path), &pool)?,
+        None => Appeals::new(),
+    };
+
+    let result = algorithm::run(pool.applicants(), pool.positions(), &appeals);
+    report::print(&result, &pool);
+    Ok(())
 }
