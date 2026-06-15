@@ -11,6 +11,8 @@ pub struct Pool {
     applicants: Vec<Applicant>,
     positions: Vec<Position>,
     ccas: HashMap<CCAIdx, String>,
+    applicant_idx: HashMap<ApplicantIdx, usize>,
+    position_idx: HashMap<PositionIdx, usize>,
 }
 
 impl Pool {
@@ -19,10 +21,14 @@ impl Pool {
         positions: Vec<Position>,
         ccas: HashMap<CCAIdx, String>,
     ) -> Self {
+        let applicant_idx = applicants.iter().enumerate().map(|(i, a)| (a.id, i)).collect();
+        let position_idx = positions.iter().enumerate().map(|(i, p)| (p.id, i)).collect();
         Pool {
             applicants,
             positions,
             ccas,
+            applicant_idx,
+            position_idx,
         }
     }
 
@@ -37,6 +43,16 @@ impl Pool {
     /// CCA display name for `id`, if known.
     pub fn cca_name(&self, id: CCAIdx) -> Option<&str> {
         self.ccas.get(&id).map(String::as_str)
+    }
+
+    /// Applicant by id, O(1).
+    pub fn applicant(&self, id: ApplicantIdx) -> Option<&Applicant> {
+        self.applicant_idx.get(&id).map(|&i| &self.applicants[i])
+    }
+
+    /// Position by id, O(1).
+    pub fn position(&self, id: PositionIdx) -> Option<&Position> {
+        self.position_idx.get(&id).map(|&i| &self.positions[i])
     }
 }
 
@@ -107,6 +123,20 @@ mod tests {
         assert_eq!(pool.positions().len(), 1);
         assert_eq!(pool.cca_name(CCAIdx(5)), Some("Chess"));
         assert_eq!(pool.cca_name(CCAIdx(99)), None);
+    }
+
+    #[test]
+    fn id_accessors_find_by_id() {
+        let applicants = vec![Applicant::new(1, "Ann".into(), "a@x".into(), vec![])];
+        let positions = vec![Position::new(
+            10, 5, "Head".into(), None, 1, PositionType::MainComm, vec![],
+        )];
+        let pool = Pool::new(applicants, positions, HashMap::new());
+
+        assert_eq!(pool.applicant(ApplicantIdx(1)).unwrap().name, "Ann");
+        assert!(pool.applicant(ApplicantIdx(99)).is_none());
+        assert_eq!(pool.position(PositionIdx(10)).unwrap().capacity, 1);
+        assert!(pool.position(PositionIdx(99)).is_none());
     }
 
     // ---- per-algorithm view (`Roster`) ----
