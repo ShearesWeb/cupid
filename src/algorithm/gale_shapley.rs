@@ -71,8 +71,14 @@ fn propose(
     // Role capacity is full -> find the weakest currently-held seat (largest rank).
     let applicant_rank = position.rank_of(applicant.id).unwrap_or(usize::MAX);
 
-    let loser = ledger
-        .holders(position.id)
+    let holders = ledger.holders(position.id);
+    if holders.is_empty() {
+        // All seats are occupied by pre-existing appointments; no one to displace.
+        ledger.reject(applicant.id, position.id, RejectReason::RoleCapacityFull);
+        return;
+    }
+
+    let loser = holders
         .into_iter()
         .max_by_key(|&h| position.rank_of(h).unwrap_or(usize::MAX))
         .unwrap();

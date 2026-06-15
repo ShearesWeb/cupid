@@ -114,3 +114,32 @@ fn allocates_real_committee_corpus() {
         assert!(!(main >= 1 && sub >= 2), "{} violates main/sub rule", a.name);
     }
 }
+
+#[test]
+fn appointments_reduce_seats_and_quota() {
+    use PositionType::MainComm;
+
+    // P100 cap 1, already held by appointee #9 (not an applicant).
+    // Applicant 1 ranks P100 but cannot get it (no vacancy).
+    let applicants = vec![
+        Applicant::new(1, "Aria".into(), "aria@x".into(), vec![PositionIdx(100)]),
+        // Applicant 2 already holds a maincomm via appointment, then ranks another.
+        Applicant::new(2, "Mason".into(), "mason@x".into(), vec![PositionIdx(101)])
+            .with_appointments(vec![PositionIdx(102)]),
+    ];
+    let positions = vec![
+        Position::new(100, 1, "Solo".into(), None, 1, MainComm, vec![ApplicantIdx(1)])
+            .with_appointments(vec![ApplicantIdx(9)]),
+        Position::new(101, 1, "Open".into(), None, 1, MainComm, vec![ApplicantIdx(2)]),
+        Position::new(102, 1, "Held".into(), None, 1, MainComm, vec![])
+            .with_appointments(vec![ApplicantIdx(2)]),
+    ];
+    let pool = Pool::new(applicants, positions, HashMap::new());
+
+    let result = run(&pool, &Appeals::new());
+
+    // P100's only seat is taken by the appointee -> applicant 1 gets nothing there.
+    assert!(result.positions_of(ApplicantIdx(1)).is_empty(), "no vacancy in P100");
+    // Applicant 2 holds P102 (appointment) + wins P101 = 2 main, still within quota.
+    assert!(result.positions_of(ApplicantIdx(2)).contains(&PositionIdx(101)));
+}
