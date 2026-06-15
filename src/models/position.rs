@@ -60,6 +60,9 @@ pub struct Position {
 
     /// Inverse `ranking` for O(1) lookup: applicant -> 1-based rank.
     inverse_rank: HashMap<ApplicantIdx, usize>,
+
+    /// Existing holders of this position.
+    appointments: Vec<ApplicantIdx>,
 }
 
 impl Position {
@@ -87,6 +90,7 @@ impl Position {
             position_type,
             ranking,
             inverse_rank,
+            appointments: Vec::new(),
         }
     }
 
@@ -102,6 +106,22 @@ impl Position {
 
     pub fn algorithm(&self) -> Algorithm {
         self.position_type.algorithm()
+    }
+
+    /// Existing holders of this position.
+    pub fn appointments(&self) -> &[ApplicantIdx] {
+        &self.appointments
+    }
+
+    /// Seats open to the matcher = real capacity minus existing holders.
+    pub fn vacancies(&self) -> usize {
+        self.capacity.saturating_sub(self.appointments.len())
+    }
+
+    /// Builder: attach existing holders (set once during corpus assembly).
+    pub fn with_appointments(mut self, appointments: Vec<ApplicantIdx>) -> Self {
+        self.appointments = appointments;
+        self
     }
 }
 
@@ -127,6 +147,21 @@ mod tests {
     fn parse_rejects_unknown() {
         let err = "exco".parse::<PositionType>().unwrap_err();
         assert!(err.contains("exco"), "error names the bad input: {err}");
+    }
+
+    #[test]
+    fn vacancies_is_capacity_minus_appointments() {
+        let p = Position::new(10, 1, "P".into(), None, 3, PositionType::MainComm, vec![]);
+        assert_eq!(p.vacancies(), 3, "no appointments -> full capacity");
+
+        let p = p.with_appointments(vec![ApplicantIdx(1), ApplicantIdx(2)]);
+        assert_eq!(p.appointments(), &[ApplicantIdx(1), ApplicantIdx(2)]);
+        assert_eq!(p.vacancies(), 1, "2 of 3 seats already held");
+
+        // More appointees than capacity saturates to 0, never underflows.
+        let full = Position::new(11, 1, "Q".into(), None, 1, PositionType::MainComm, vec![])
+            .with_appointments(vec![ApplicantIdx(1), ApplicantIdx(2)]);
+        assert_eq!(full.vacancies(), 0);
     }
 
     #[test]
