@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use super::resolve::derive;
-use super::{chair_preferences, user_preferences};
+use super::{appointments, chair_preferences, user_preferences};
 use crate::models::Pool;
 
 /// Load the corpus from the production database.
@@ -13,7 +13,8 @@ pub fn load() -> Result<Pool, Box<dyn Error>> {
 
     let user_prefs = user_preferences::load(&mut client)?;
     let chair_prefs = chair_preferences::load(&mut client)?;
-    Ok(derive(&user_prefs, &chair_prefs))
+    let appts = appointments::load(&mut client)?;
+    Ok(derive(&user_prefs, &chair_prefs, &appts))
 }
 
 #[cfg(test)]

@@ -1,3 +1,4 @@
+mod appointments;
 mod chair_preferences;
 mod resolve;
 mod user_preferences;
