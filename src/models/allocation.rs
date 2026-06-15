@@ -131,9 +131,8 @@ impl MatchResult {
         positions
             .iter()
             .filter_map(|p| {
-                let capacity = p.capacity;
                 let filled = self.for_position(p.id).len();
-                let empty = capacity.saturating_sub(filled);
+                let empty = p.vacancies().saturating_sub(filled);
                 (empty > 0).then_some((p.id, empty))
             })
             .collect()
@@ -206,6 +205,18 @@ mod tests {
         let (_, positions, result) = sample();
         // M (cap 1) is full and omitted; S (cap 2) has one empty seat.
         assert_eq!(result.unfilled(&positions), vec![(PositionIdx(20), 1)]);
+    }
+
+    #[test]
+    fn unfilled_counts_against_vacancies_not_capacity() {
+        // P30 has cap 1 but its only seat is taken by an appointee (not a matched
+        // holder), so it has zero vacancies and must NOT report as unfilled.
+        let positions = vec![position(30, 1, &[]).with_appointments(vec![ApplicantIdx(9)])];
+        let result = MatchResult::default();
+        assert!(
+            result.unfilled(&positions).is_empty(),
+            "fully-appointed position has no open seats"
+        );
     }
 
     #[test]
