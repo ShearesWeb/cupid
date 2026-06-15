@@ -71,7 +71,7 @@ mod tests {
         ccas.insert(CCAIdx(1), "Chess".to_string());
         let pool = Pool::new(applicants, positions, ccas);
 
-        let result = run(pool.applicants(), pool.positions(), &Appeals::new());
+        let result = run(&pool, &Appeals::new());
         let text = render(&result, &pool);
 
         assert!(text.contains("Chess"), "cca name missing:\n{text}");

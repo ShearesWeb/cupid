@@ -10,7 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // corpus. Missing dir or no files -> no appeals.
     let appeals = data::appeals::load_and_resolve(Path::new("data/appeals"), &pool)?;
 
-    let result = algorithm::run(pool.applicants(), pool.positions(), &appeals);
+    let result = algorithm::run(&pool, &appeals);
     report::print(&result, &pool);
     Ok(())
 }

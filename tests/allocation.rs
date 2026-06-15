@@ -63,7 +63,7 @@ fn sorted(mut v: Vec<i32>) -> Vec<i32> {
 #[test]
 fn allocates_real_committee_corpus() {
     let pool = corpus();
-    let result = run(pool.applicants(), pool.positions(), &Appeals::new());
+    let result = run(&pool, &Appeals::new());
 
     // --- exact holdings per applicant (sorted position-id sets) ---
     let held =

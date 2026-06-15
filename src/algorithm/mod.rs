@@ -1,41 +1,35 @@
 mod gale_shapley;
 mod immediate_acceptance;
 
-use crate::models::{
-    Algorithm, Appeals, Applicant, CapacityStore, Ledger, MatchResult, Roster, Position,
-};
+use crate::models::{Algorithm, Appeals, CapacityStore, Ledger, MatchResult, Pool, Roster};
 
 /// Run the full two-pass allocation.
 ///
 ///   Pass 1: Immediate Acceptance over all BlockComm positions.
 ///   Pass 2: Gale-Shapley over all MainComm + SubComm positions.
-pub fn run(applicants: &[Applicant], positions: &[Position], appeals: &Appeals) -> MatchResult {
+pub fn run(pool: &Pool, appeals: &Appeals) -> MatchResult {
     // One borrowed view per pass: every applicant, plus the positions routed to
     // that algorithm.
-    let ia_pool = Roster::for_algorithm(applicants, positions, Algorithm::ImmediateAcceptance);
-    let gs_pool: Roster<'_> = Roster::for_algorithm(applicants, positions, Algorithm::GaleShapley);
+    let ia = Roster::for_algorithm(pool.applicants(), pool.positions(), Algorithm::ImmediateAcceptance);
+    let gs = Roster::for_algorithm(pool.applicants(), pool.positions(), Algorithm::GaleShapley);
 
-    // One ledger and store carry across both passes
+    // One ledger and store carry across both passes; the store starts pre-seeded
+    // with everyone's existing appointments.
     let mut ledger: Ledger = Ledger::new(Algorithm::ImmediateAcceptance);
-    let mut store: CapacityStore = CapacityStore::new();
+    let mut store: CapacityStore = CapacityStore::from_pool(pool);
 
-    // Pass 1 — BlockComm
-    immediate_acceptance::run(&ia_pool, appeals, &mut store, &mut ledger);
-
-    // Switch the ledger's phase (same log, new stamp) — do NOT finalize yet.
+    immediate_acceptance::run(&ia, appeals, &mut store, &mut ledger);
     ledger.enter(Algorithm::GaleShapley, 0);
+    gale_shapley::run(&gs, appeals, &mut store, &mut ledger);
 
-    // Pass 2 — MainComm + SubComm
-    gale_shapley::run(&gs_pool, appeals, &mut store, &mut ledger);
-
-    // Finalize exactly once, at the very end: freeze the log into the result.
     ledger.finish()
 }
 
 #[cfg(test)]
 mod tests {
     use crate::algorithm::run;
-    use crate::models::{Appeals, Applicant, ApplicantIdx, Position, PositionIdx, PositionType};
+    use crate::models::{Appeals, Applicant, ApplicantIdx, Pool, Position, PositionIdx, PositionType};
+    use std::collections::HashMap;
 
     #[test]
     fn gs_proposes_below_a_higher_ranked_blockcomm() {
@@ -52,7 +46,7 @@ mod tests {
             Position::new(200, 2, "Main".into(), None, 1, PositionType::MainComm, vec![ApplicantIdx(1)]),
         ];
 
-        let result = run(&applicants, &positions, &Appeals::new());
+        let result = run(&Pool::new(applicants, positions, HashMap::new()), &Appeals::new());
 
         let held = result.positions_of(ApplicantIdx(1));
         assert!(
@@ -78,13 +72,13 @@ mod tests {
         ];
 
         // Without an appeal: 301 is rejected on quota.
-        let plain = run(&applicants, &positions, &Appeals::new());
+        let plain = run(&Pool::new(applicants.clone(), positions.clone(), HashMap::new()), &Appeals::new());
         assert!(!plain.positions_of(ApplicantIdx(1)).contains(&PositionIdx(301)));
 
         // With an appeal on (1, 301): the quota check is bypassed and 301 is seated.
         let mut appeals = Appeals::new();
         appeals.grant(ApplicantIdx(1), PositionIdx(301));
-        let appealed = run(&applicants, &positions, &appeals);
+        let appealed = run(&Pool::new(applicants, positions, HashMap::new()), &appeals);
         assert!(appealed.positions_of(ApplicantIdx(1)).contains(&PositionIdx(301)));
     }
 
@@ -99,7 +93,7 @@ mod tests {
             200, 1, "Main".into(), None, 1, MainComm, vec![ApplicantIdx(2)],
         )];
 
-        let result = run(&applicants, &positions, &Appeals::new());
+        let result = run(&Pool::new(applicants, positions, HashMap::new()), &Appeals::new());
         assert!(!result.positions_of(ApplicantIdx(1)).contains(&PositionIdx(200)));
     }
 
@@ -117,7 +111,7 @@ mod tests {
             Position::new(40, 1, "N".into(), None, 1, MainComm, vec![ApplicantIdx(2)]), // 1 unranked here
         ];
 
-        let result = run(&applicants, &positions, &Appeals::new());
+        let result = run(&Pool::new(applicants, positions, HashMap::new()), &Appeals::new());
         assert!(
             result.positions_of(ApplicantIdx(1)).contains(&PositionIdx(30)),
             "chair-preferred applicant 1 should hold M"
@@ -140,7 +134,7 @@ mod tests {
             50, 1, "B".into(), None, 1, BlockComm, vec![ApplicantIdx(1), ApplicantIdx(2)],
         )];
 
-        let result = run(&applicants, &positions, &Appeals::new());
+        let result = run(&Pool::new(applicants, positions, HashMap::new()), &Appeals::new());
         assert_eq!(result.positions_of(ApplicantIdx(1)), &[PositionIdx(50)]);
         assert!(result.positions_of(ApplicantIdx(2)).is_empty());
     }
@@ -160,7 +154,7 @@ mod tests {
             Position::new(61, 1, "X".into(), None, 1, BlockComm, vec![]), // ranks nobody
         ];
 
-        let result = run(&applicants, &positions, &Appeals::new());
+        let result = run(&Pool::new(applicants, positions, HashMap::new()), &Appeals::new());
         assert_eq!(
             result.positions_of(ApplicantIdx(1)),
             &[PositionIdx(60)],
@@ -186,9 +180,44 @@ mod tests {
             Position::new(72, 3, "M".into(), None, 1, MainComm, vec![ApplicantIdx(1)]),
         ];
 
-        let result = run(&applicants, &positions, &Appeals::new());
+        let result = run(&Pool::new(applicants, positions, HashMap::new()), &Appeals::new());
         let held = result.positions_of(ApplicantIdx(1));
         assert!(held.contains(&PositionIdx(70)) && held.contains(&PositionIdx(71)));
         assert!(!held.contains(&PositionIdx(72)), "main rejected: main+block quota full");
+    }
+
+    #[test]
+    fn appointment_reduces_open_seats() {
+        // Cap-1 blockcomm already held by an appointee -> the applicant gets nothing.
+        let applicants = vec![Applicant::new(1, "Ann".into(), "a@x".into(), vec![PositionIdx(50)])];
+        let positions = vec![Position::new(
+            50, 1, "B".into(), None, 1, PositionType::BlockComm, vec![ApplicantIdx(1)],
+        )
+        .with_appointments(vec![ApplicantIdx(2)])];
+        let pool = Pool::new(applicants, positions, HashMap::new());
+
+        let result = run(&pool, &Appeals::new());
+        assert!(result.positions_of(ApplicantIdx(1)).is_empty(), "seat already taken by appointee");
+    }
+
+    #[test]
+    fn appointment_consumes_quota() {
+        // Ann already holds 2 main+block via appointments -> a 3rd main is barred.
+        let applicants = vec![Applicant::new(1, "Ann".into(), "a@x".into(), vec![PositionIdx(60)])
+            .with_appointments(vec![PositionIdx(40), PositionIdx(41)])];
+        let positions = vec![
+            Position::new(40, 1, "M1".into(), None, 1, PositionType::MainComm, vec![])
+                .with_appointments(vec![ApplicantIdx(1)]),
+            Position::new(41, 1, "M2".into(), None, 1, PositionType::MainComm, vec![])
+                .with_appointments(vec![ApplicantIdx(1)]),
+            Position::new(60, 1, "M3".into(), None, 1, PositionType::MainComm, vec![ApplicantIdx(1)]),
+        ];
+        let pool = Pool::new(applicants, positions, HashMap::new());
+
+        let result = run(&pool, &Appeals::new());
+        assert!(
+            !result.positions_of(ApplicantIdx(1)).contains(&PositionIdx(60)),
+            "main+block quota already full from appointments"
+        );
     }
 }
