@@ -43,7 +43,7 @@ pub fn run(pool: &Roster, appeals: &Appeals, store: &mut CapacityStore, ledger: 
         // seats run out. Acceptance is permanent.
         for (pid, proposers) in &proposals {
             let position = pool.position(*pid).unwrap();
-            let mut seats_left = position.capacity - ledger.holder_count(*pid);
+            let mut seats_left = position.vacancies() - ledger.holder_count(*pid);
 
             // Walk chair ranking (best first) so seats go to top proposers.
             let mut seated: HashSet<ApplicantIdx> = HashSet::new();

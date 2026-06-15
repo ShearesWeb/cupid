@@ -62,7 +62,7 @@ fn propose(
     }
 
     // Role capacity not reached: tentatively accept proposal
-    if ledger.holder_count(position.id) < position.capacity {
+    if ledger.holder_count(position.id) < position.vacancies() {
         store.grant(applicant.id, position.position_type, appealed);
         ledger.accept(applicant, position);
         return;
