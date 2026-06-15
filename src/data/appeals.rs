@@ -3,40 +3,43 @@ use std::error::Error;
 use std::io::Read;
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use super::DataSourcePool;
 use crate::models::{Appeals, ApplicantIdx, PositionIdx};
 
-/// One appeal row: every column matched by name, never by database ID.
+/// One appeal row: matched by applicant cca position name.
 #[derive(Debug, Deserialize)]
 pub struct AppealRecord {
+    #[serde(deserialize_with = "trimmed_string")]
     pub applicant_name: String,
+    #[serde(deserialize_with = "trimmed_string")]
     pub cca_name: String,
+    #[serde(deserialize_with = "trimmed_string")]
     pub position_name: String,
 }
 
-/// Read + parse the appeals CSV file. Thin I/O.
+/// Deserialize a string field with surrounding whitespace stripped.
+fn trimmed_string<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(String::deserialize(d)?.trim().to_owned())
+}
+
+/// Read + parse the appeals CSV file..
 fn load(path: &Path) -> Result<Vec<AppealRecord>, Box<dyn Error>> {
     let file = std::fs::File::open(path)?;
     parse(file)
 }
 
-/// Parse appeal records from any reader. Split out so it is testable without a file.
+/// Parse appeal records from any reader. Fields are trimmed during
+/// deserialization. Split out so it is testable without a file.
 fn parse<R: Read>(reader: R) -> Result<Vec<AppealRecord>, Box<dyn Error>> {
     let mut rdr = csv::Reader::from_reader(reader);
-    let mut records: Vec<AppealRecord> = Vec::new();
-    for result in rdr.deserialize() {
-        records.push(result?);
-    }
-    Ok(records)
+    rdr.deserialize::<AppealRecord>()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(Into::into)
 }
 
-/// Resolve appeal rows against the loaded corpus by name. Pure.
-///
-/// Applicant names are not unique in `users`, so 0 or >1 matches is a problem.
-/// Positions are unique per `(cca_name, position_name)`. All problems are
-/// collected (with 1-based line numbers) and returned as one error.
+/// Resolve appeal rows against the loaded corpus by name.
 fn resolve(records: &[AppealRecord], pool: &DataSourcePool) -> Result<Appeals, Box<dyn Error>> {
     let mut by_name: HashMap<String, Vec<ApplicantIdx>> = HashMap::new();
     for a in pool.applicants() {
@@ -56,20 +59,16 @@ fn resolve(records: &[AppealRecord], pool: &DataSourcePool) -> Result<Appeals, B
     let mut appeals = Appeals::new();
     let mut problems: Vec<String> = Vec::new();
 
-    for (i, rec) in records.iter().enumerate() {
-        let line = i + 2; // header is line 1; first record is line 2
-        let applicant_name = rec.applicant_name.trim();
-        let cca_name = rec.cca_name.trim();
-        let position_name = rec.position_name.trim();
-
-        let applicant_id = match by_name.get(applicant_name) {
+    for rec in records {
+        let applicant_id = match by_name.get(&rec.applicant_name) {
             None => {
-                problems.push(format!("line {line}: unknown applicant '{applicant_name}'"));
+                problems.push(format!("unknown applicant '{}'", rec.applicant_name));
                 continue;
             }
             Some(ids) if ids.len() > 1 => {
                 problems.push(format!(
-                    "line {line}: ambiguous applicant '{applicant_name}' ({} matches)",
+                    "ambiguous applicant '{}' ({} matches)",
+                    rec.applicant_name,
                     ids.len()
                 ));
                 continue;
@@ -77,11 +76,12 @@ fn resolve(records: &[AppealRecord], pool: &DataSourcePool) -> Result<Appeals, B
             Some(ids) => ids[0],
         };
 
-        let key = (cca_name.to_string(), position_name.to_string());
+        let key = (rec.cca_name.clone(), rec.position_name.clone());
         let position_id = match by_cca_pos.get(&key) {
             None => {
                 problems.push(format!(
-                    "line {line}: unknown position '{position_name}' in CCA '{cca_name}'"
+                    "unknown position '{}' in CCA '{}'",
+                    rec.position_name, rec.cca_name
                 ));
                 continue;
             }
@@ -95,7 +95,7 @@ fn resolve(records: &[AppealRecord], pool: &DataSourcePool) -> Result<Appeals, B
         Ok(appeals)
     } else {
         Err(format!(
-            "appeals CSV had {} problem(s):\n{}",
+            "{} problem(s) resolving appeals:\n{}",
             problems.len(),
             problems.join("\n")
         )
@@ -146,6 +146,15 @@ mod tests {
         let records = parse(Cursor::new(csv)).unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].applicant_name, "Cara");
+    }
+
+    #[test]
+    fn parse_trims_every_field() {
+        let csv = "applicant_name,cca_name,position_name\n  Cara  ,  Chess  ,  Head  \n";
+        let records = parse(Cursor::new(csv)).unwrap();
+        assert_eq!(records[0].applicant_name, "Cara");
+        assert_eq!(records[0].cca_name, "Chess");
+        assert_eq!(records[0].position_name, "Head");
     }
 
     #[test]

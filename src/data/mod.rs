@@ -2,11 +2,14 @@ use std::collections::HashMap;
 
 use crate::models::{Applicant, CCAIdx, Position};
 
+mod assemble;
+mod chair_pref;
+mod user_pref;
+
 pub mod appeals;
 pub mod db;
 
-/// Owned corpus loaded from the database. The owned counterpart to the
-/// algorithm-internal, borrowed `Pool<'a>`: `algorithm::run` borrows its slices.
+/// Owned corpus loaded from the database.
 pub struct DataSourcePool {
     applicants: Vec<Applicant>,
     positions: Vec<Position>,
@@ -19,7 +22,11 @@ impl DataSourcePool {
         positions: Vec<Position>,
         ccas: HashMap<CCAIdx, String>,
     ) -> Self {
-        DataSourcePool { applicants, positions, ccas }
+        DataSourcePool {
+            applicants,
+            positions,
+            ccas,
+        }
     }
 
     pub fn applicants(&self) -> &[Applicant] {
@@ -47,7 +54,13 @@ mod tests {
     fn accessors_expose_corpus() {
         let applicants = vec![Applicant::new(1, "Ann".into(), "ann@x".into(), vec![])];
         let positions = vec![Position::new(
-            10, 5, "Head".into(), None, 1, PositionType::MainComm, vec![],
+            10,
+            5,
+            "Head".into(),
+            None,
+            1,
+            PositionType::MainComm,
+            vec![],
         )];
         let mut ccas = HashMap::new();
         ccas.insert(CCAIdx(5), "Chess".to_string());
