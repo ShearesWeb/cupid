@@ -12,6 +12,9 @@ pub struct Applicant {
 
     /// Preferred positions based on ranking.
     pub preferences: Vec<PositionIdx>,
+
+    /// Positions already held coming into this allocation.
+    appointments: Vec<PositionIdx>,
 }
 
 impl Applicant {
@@ -21,12 +24,24 @@ impl Applicant {
             name,
             email,
             preferences,
+            appointments: Vec::new(),
         }
     }
 
     /// Applicant's position rankings.
     pub fn preferences(&self) -> &[PositionIdx] {
         &self.preferences
+    }
+
+    /// Positions already held coming into this allocation.
+    pub fn appointments(&self) -> &[PositionIdx] {
+        &self.appointments
+    }
+
+    /// Builder: attach existing appointments (set once during corpus assembly).
+    pub fn with_appointments(mut self, appointments: Vec<PositionIdx>) -> Self {
+        self.appointments = appointments;
+        self
     }
 
     /// Chair's 1-based rank of `position`, or `None` if unranked.
@@ -66,5 +81,14 @@ mod tests {
         let a = Applicant::new(2, "Ben".into(), "ben@x".into(), vec![]);
         assert!(a.preferences().is_empty());
         assert_eq!(a.preference_of(PositionIdx(1)), None);
+    }
+
+    #[test]
+    fn appointments_default_empty_and_settable() {
+        let a = Applicant::new(1, "Ann".into(), "a@x".into(), vec![]);
+        assert!(a.appointments().is_empty());
+
+        let a = a.with_appointments(vec![PositionIdx(10), PositionIdx(20)]);
+        assert_eq!(a.appointments(), &[PositionIdx(10), PositionIdx(20)]);
     }
 }
