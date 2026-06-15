@@ -6,12 +6,11 @@
 use std::collections::HashMap;
 
 use cupid::algorithm::run;
-use cupid::data::DataSourcePool;
 use cupid::models::{
-    Appeals, Applicant, ApplicantIdx, CCAIdx, Position, PositionIdx, PositionType,
+    Appeals, Applicant, ApplicantIdx, CCAIdx, Pool, Position, PositionIdx, PositionType,
 };
 
-fn corpus() -> DataSourcePool {
+fn corpus() -> Pool {
     use PositionType::{BlockComm, MainComm, SubComm};
 
     let applicants = vec![
@@ -53,7 +52,7 @@ fn corpus() -> DataSourcePool {
     ccas.insert(CCAIdx(3), "Sheares Media (SHM)".to_string());
     ccas.insert(CCAIdx(4), "Sheares Engagement Camp Committee (SECC)".to_string());
 
-    DataSourcePool::new(applicants, positions, ccas)
+    Pool::new(applicants, positions, ccas)
 }
 
 fn sorted(mut v: Vec<i32>) -> Vec<i32> {

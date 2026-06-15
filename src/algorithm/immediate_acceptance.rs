@@ -1,11 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::models::{
-    Appeals, ApplicantIdx, CapacityStore, Ledger, Pool, PositionIdx, RejectReason,
+    Appeals, ApplicantIdx, CapacityStore, Ledger, Roster, PositionIdx, RejectReason,
 };
 
 /// Pass 1 — Immediate Acceptance (Boston mechanism), BlockComm positions only.
-pub fn run(pool: &Pool, appeals: &Appeals, store: &mut CapacityStore, ledger: &mut Ledger) {
+pub fn run(pool: &Roster, appeals: &Appeals, store: &mut CapacityStore, ledger: &mut Ledger) {
     let mut rank: usize = 0;
 
     loop {

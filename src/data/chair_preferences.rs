@@ -2,8 +2,7 @@ use std::error::Error;
 
 use postgres::Client;
 
-/// One row of `cca_position_preferences` (chair side), joined to the position's
-/// metadata. `rank` is the chair's 1-based ranking of the applicant (1 = best).
+/// One row of `cca_position_preferences`, joined to the position's metadata.
 #[derive(Debug)]
 pub struct ChairPrefRecord {
     pub position_id: i32,
@@ -16,11 +15,7 @@ pub struct ChairPrefRecord {
     pub cca_name: String,
 }
 
-/// Load the chair side: `cca_position_preferences` joined to `cca_positions`/`ccas`.
-///
-/// The Postgres enum `position_type` is cast to text so it deserializes as a
-/// `String`. Nullability: `rank` is NOT NULL and the joins are inner over NOT NULL
-/// FKs, so only `capacity` is nullable (the one `Option<i32>` field).
+/// Load the DB `cca_position_preferences` into `ChairPrefRecord>`.
 pub fn load(client: &mut Client) -> Result<Vec<ChairPrefRecord>, Box<dyn Error>> {
     let rows = client.query(
         "SELECT pp.position_id, pp.user_id, pp.rank, \

@@ -1,21 +1,19 @@
 use std::error::Error;
 
-use super::assemble::assemble;
-use super::{DataSourcePool, chair_pref, user_pref};
+use super::resolve::derive;
+use super::{chair_preferences, user_preferences};
+use crate::models::Pool;
 
 /// Load the corpus from the production database.
-///
-/// Opens one connection and reads the two preference tables directly (service-role,
-/// bypassing RLS) — one loader per table — then assembles the owned corpus.
-pub fn load() -> Result<DataSourcePool, Box<dyn Error>> {
+pub fn load() -> Result<Pool, Box<dyn Error>> {
     let url = std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL must be set")?;
 
     let tls = postgres_native_tls::MakeTlsConnector::new(native_tls::TlsConnector::new()?);
     let mut client = postgres::Client::connect(&url, tls)?;
 
-    let user_prefs = user_pref::load(&mut client)?;
-    let chair_prefs = chair_pref::load(&mut client)?;
-    Ok(assemble(user_prefs, chair_prefs))
+    let user_prefs = user_preferences::load(&mut client)?;
+    let chair_prefs = chair_preferences::load(&mut client)?;
+    Ok(derive(&user_prefs, &chair_prefs))
 }
 
 #[cfg(test)]

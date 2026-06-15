@@ -2,22 +2,59 @@ use std::collections::HashMap;
 
 use super::allocation::Algorithm;
 use super::applicant::{Applicant, ApplicantIdx};
-use super::position::{Position, PositionIdx};
+use super::position::{CCAIdx, Position, PositionIdx};
 
-/// A borrowed, read-only index over the applicants and positions.
-pub struct Pool<'a> {
+/// The owned corpus: every applicant, every position, and CCA display names.
+/// The single source of truth — produced by the data layer, consumed by the
+/// matcher and the report.
+pub struct Pool {
+    applicants: Vec<Applicant>,
+    positions: Vec<Position>,
+    ccas: HashMap<CCAIdx, String>,
+}
+
+impl Pool {
+    pub fn new(
+        applicants: Vec<Applicant>,
+        positions: Vec<Position>,
+        ccas: HashMap<CCAIdx, String>,
+    ) -> Self {
+        Pool {
+            applicants,
+            positions,
+            ccas,
+        }
+    }
+
+    pub fn applicants(&self) -> &[Applicant] {
+        &self.applicants
+    }
+
+    pub fn positions(&self) -> &[Position] {
+        &self.positions
+    }
+
+    /// CCA display name for `id`, if known.
+    pub fn cca_name(&self, id: CCAIdx) -> Option<&str> {
+        self.ccas.get(&id).map(String::as_str)
+    }
+}
+
+/// A borrowed, read-only index over every applicant and the positions routed to
+/// one algorithm. Built per matching pass from a [`Pool`]'s slices.
+pub struct Roster<'a> {
     applicants: HashMap<ApplicantIdx, &'a Applicant>,
     positions: HashMap<PositionIdx, &'a Position>,
 }
 
-impl<'a> Pool<'a> {
+impl<'a> Roster<'a> {
     /// Index every applicant, and only the positions routed to `algorithm`.
     pub fn for_algorithm(
         applicants: &'a [Applicant],
         positions: &'a [Position],
         algorithm: Algorithm,
     ) -> Self {
-        Pool {
+        Roster {
             applicants: applicants.iter().map(|a| (a.id, a)).collect(),
             positions: positions
                 .iter()
@@ -37,12 +74,12 @@ impl<'a> Pool<'a> {
         self.positions.get(&id).copied()
     }
 
-    /// All applicants in this pool.
+    /// All applicants in this roster.
     pub fn applicants(&self) -> impl Iterator<Item = &'a Applicant> + '_ {
         self.applicants.values().copied()
     }
 
-    /// The positions in this pool.
+    /// The positions in this roster.
     pub fn positions(&self) -> impl Iterator<Item = &'a Position> + '_ {
         self.positions.values().copied()
     }
@@ -52,6 +89,27 @@ impl<'a> Pool<'a> {
 mod tests {
     use super::*;
     use crate::models::PositionType;
+
+    // ---- owned corpus (`Pool`) ----
+
+    #[test]
+    fn pool_accessors_expose_corpus() {
+        let applicants = vec![Applicant::new(1, "Ann".into(), "ann@x".into(), vec![])];
+        let positions = vec![Position::new(
+            10, 5, "Head".into(), None, 1, PositionType::MainComm, vec![],
+        )];
+        let mut ccas = HashMap::new();
+        ccas.insert(CCAIdx(5), "Chess".to_string());
+
+        let pool = Pool::new(applicants, positions, ccas);
+
+        assert_eq!(pool.applicants().len(), 1);
+        assert_eq!(pool.positions().len(), 1);
+        assert_eq!(pool.cca_name(CCAIdx(5)), Some("Chess"));
+        assert_eq!(pool.cca_name(CCAIdx(99)), None);
+    }
+
+    // ---- per-algorithm view (`Roster`) ----
 
     fn fixture() -> (Vec<Applicant>, Vec<Position>) {
         let applicants = vec![
@@ -67,35 +125,35 @@ mod tests {
     }
 
     #[test]
-    fn ia_pool_keeps_only_blockcomm() {
+    fn ia_roster_keeps_only_blockcomm() {
         let (applicants, positions) = fixture();
-        let pool = Pool::for_algorithm(&applicants, &positions, Algorithm::ImmediateAcceptance);
-        assert_eq!(pool.positions().count(), 1);
-        assert!(pool.position(PositionIdx(10)).is_some(), "blockcomm in scope");
-        assert!(pool.position(PositionIdx(20)).is_none(), "maincomm filtered out");
-        assert!(pool.position(PositionIdx(30)).is_none(), "subcomm filtered out");
+        let roster = Roster::for_algorithm(&applicants, &positions, Algorithm::ImmediateAcceptance);
+        assert_eq!(roster.positions().count(), 1);
+        assert!(roster.position(PositionIdx(10)).is_some(), "blockcomm in scope");
+        assert!(roster.position(PositionIdx(20)).is_none(), "maincomm filtered out");
+        assert!(roster.position(PositionIdx(30)).is_none(), "subcomm filtered out");
     }
 
     #[test]
-    fn gs_pool_keeps_main_and_sub() {
+    fn gs_roster_keeps_main_and_sub() {
         let (applicants, positions) = fixture();
-        let pool = Pool::for_algorithm(&applicants, &positions, Algorithm::GaleShapley);
-        assert_eq!(pool.positions().count(), 2);
-        assert!(pool.position(PositionIdx(20)).is_some());
-        assert!(pool.position(PositionIdx(30)).is_some());
-        assert!(pool.position(PositionIdx(10)).is_none(), "blockcomm filtered out");
+        let roster = Roster::for_algorithm(&applicants, &positions, Algorithm::GaleShapley);
+        assert_eq!(roster.positions().count(), 2);
+        assert!(roster.position(PositionIdx(20)).is_some());
+        assert!(roster.position(PositionIdx(30)).is_some());
+        assert!(roster.position(PositionIdx(10)).is_none(), "blockcomm filtered out");
     }
 
     #[test]
-    fn every_applicant_is_present_in_each_pool() {
-        // The pool partitions positions by algorithm but never drops applicants.
+    fn every_applicant_is_present_in_each_roster() {
+        // The roster partitions positions by algorithm but never drops applicants.
         let (applicants, positions) = fixture();
         for algo in [Algorithm::ImmediateAcceptance, Algorithm::GaleShapley] {
-            let pool = Pool::for_algorithm(&applicants, &positions, algo);
-            assert_eq!(pool.applicants().count(), 2);
-            assert!(pool.applicant(ApplicantIdx(1)).is_some());
-            assert!(pool.applicant(ApplicantIdx(2)).is_some());
-            assert!(pool.applicant(ApplicantIdx(99)).is_none());
+            let roster = Roster::for_algorithm(&applicants, &positions, algo);
+            assert_eq!(roster.applicants().count(), 2);
+            assert!(roster.applicant(ApplicantIdx(1)).is_some());
+            assert!(roster.applicant(ApplicantIdx(2)).is_some());
+            assert!(roster.applicant(ApplicantIdx(99)).is_none());
         }
     }
 }

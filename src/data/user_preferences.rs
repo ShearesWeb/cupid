@@ -2,8 +2,7 @@ use std::error::Error;
 
 use postgres::Client;
 
-/// One row of `cca_user_preferences` (user side), joined to the applicant's
-/// identity. `rank` is the applicant's 1-based choice order (1 = top pick).
+/// One row of `cca_user_preferences` joined to the applicant's identity.
 #[derive(Debug)]
 pub struct UserPrefRecord {
     pub user_id: i32,
@@ -13,11 +12,7 @@ pub struct UserPrefRecord {
     pub user_email: String,
 }
 
-/// Load the user side: `cca_user_preferences` joined to `users`.
-///
-/// Nullability: `rank` is NOT NULL (CHECK rank > 0) and the join is inner over a
-/// NOT NULL FK, so `user_name`/`user_email` are always present — the non-Option
-/// `row.get`s cannot panic on a NULL.
+/// Load the DB `cca_user_preferences` into `UserPrefRecord>`.
 pub fn load(client: &mut Client) -> Result<Vec<UserPrefRecord>, Box<dyn Error>> {
     let rows = client.query(
         "SELECT up.user_id, up.position_id, up.rank, \

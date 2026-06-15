@@ -1,10 +1,9 @@
 use std::fmt::Write;
 
-use crate::data::DataSourcePool;
-use crate::models::MatchResult;
+use crate::models::{MatchResult, Pool};
 
 /// Render a read-only text report of the allocation.
-pub fn render(result: &MatchResult, pool: &DataSourcePool) -> String {
+pub fn render(result: &MatchResult, pool: &Pool) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "=== Allocations ===");
     for position in pool.positions() {
@@ -38,7 +37,7 @@ pub fn render(result: &MatchResult, pool: &DataSourcePool) -> String {
     out
 }
 
-fn applicant_name(pool: &DataSourcePool, id: crate::models::ApplicantIdx) -> &str {
+fn applicant_name(pool: &Pool, id: crate::models::ApplicantIdx) -> &str {
     pool.applicants()
         .iter()
         .find(|a| a.id == id)
@@ -47,7 +46,7 @@ fn applicant_name(pool: &DataSourcePool, id: crate::models::ApplicantIdx) -> &st
 }
 
 /// Print the report to stdout.
-pub fn print(result: &MatchResult, pool: &DataSourcePool) {
+pub fn print(result: &MatchResult, pool: &Pool) {
     print!("{}", render(result, pool));
 }
 
@@ -70,7 +69,7 @@ mod tests {
         ];
         let mut ccas = HashMap::new();
         ccas.insert(CCAIdx(1), "Chess".to_string());
-        let pool = DataSourcePool::new(applicants, positions, ccas);
+        let pool = Pool::new(applicants, positions, ccas);
 
         let result = run(pool.applicants(), pool.positions(), &Appeals::new());
         let text = render(&result, &pool);

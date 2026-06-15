@@ -15,5 +15,5 @@ pub use allocation::{Algorithm, MatchResult, RejectReason};
 pub use applicant::{Applicant, ApplicantIdx};
 pub use capacity::{Appeals, CapacityStore};
 pub use ledger::Ledger;
-pub use pool::Pool;
+pub use pool::{Pool, Roster};
 pub use position::{CCAIdx, Position, PositionIdx, PositionType};

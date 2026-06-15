@@ -2,7 +2,7 @@ mod gale_shapley;
 mod immediate_acceptance;
 
 use crate::models::{
-    Algorithm, Appeals, Applicant, CapacityStore, Ledger, MatchResult, Pool, Position,
+    Algorithm, Appeals, Applicant, CapacityStore, Ledger, MatchResult, Roster, Position,
 };
 
 /// Run the full two-pass allocation.
@@ -12,8 +12,8 @@ use crate::models::{
 pub fn run(applicants: &[Applicant], positions: &[Position], appeals: &Appeals) -> MatchResult {
     // One borrowed view per pass: every applicant, plus the positions routed to
     // that algorithm.
-    let ia_pool = Pool::for_algorithm(applicants, positions, Algorithm::ImmediateAcceptance);
-    let gs_pool: Pool<'_> = Pool::for_algorithm(applicants, positions, Algorithm::GaleShapley);
+    let ia_pool = Roster::for_algorithm(applicants, positions, Algorithm::ImmediateAcceptance);
+    let gs_pool: Roster<'_> = Roster::for_algorithm(applicants, positions, Algorithm::GaleShapley);
 
     // One ledger and store carry across both passes
     let mut ledger: Ledger = Ledger::new(Algorithm::ImmediateAcceptance);
