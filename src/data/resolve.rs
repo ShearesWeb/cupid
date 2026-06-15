@@ -111,12 +111,17 @@ pub fn derive(
     let mut applicants: Vec<Applicant> = Vec::new();
     for (user_id, mut acc) in app_acc {
         acc.prefs.sort_by_key(|&(_, rank)| rank);
-        let preferences: Vec<PositionIdx> =
-            acc.prefs.iter().map(|&(pid, _)| PositionIdx(pid)).collect();
         let held: Vec<PositionIdx> = appt_by_user
             .get(&user_id)
             .map(|ids| ids.iter().map(|&pid| PositionIdx(pid)).collect())
             .unwrap_or_default();
+        // A position already held by appointment must not be matched again.
+        let preferences: Vec<PositionIdx> = acc
+            .prefs
+            .iter()
+            .map(|&(pid, _)| PositionIdx(pid))
+            .filter(|pid| !held.contains(pid))
+            .collect();
         applicants.push(
             Applicant::new(user_id, acc.name, acc.email, preferences).with_appointments(held),
         );
@@ -351,6 +356,18 @@ mod tests {
 
         assert!(pool.positions().is_empty(), "member position dropped");
         assert!(pool.applicant(ApplicantIdx(2)).is_none(), "holder of a dropped position not added");
+    }
+
+    #[test]
+    fn held_position_is_removed_from_preferences() {
+        let user_prefs = vec![upref(1, 10, 1)];
+        let chair_prefs = vec![cpref(10, 1, 1, "maincomm", Some(2), 5)];
+        let appts = vec![apptrec(1, 10)];
+
+        let pool = derive(&user_prefs, &chair_prefs, &appts);
+        let a = pool.applicant(ApplicantIdx(1)).unwrap();
+        assert!(a.preferences().is_empty(), "held position filtered out of prefs");
+        assert_eq!(a.appointments(), &[PositionIdx(10)]);
     }
 
     // ---- appeals resolution (`derive_appeals`) ----
