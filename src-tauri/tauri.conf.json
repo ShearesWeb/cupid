@@ -5,13 +5,25 @@
   "identifier": "app.shearesweb.cupid",
   "build": {
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "npm --prefix ../ui run dev",
-    "beforeBuildCommand": "npm --prefix ../ui run build",
+    "beforeDevCommand": "npm --prefix ui run dev",
+    "beforeBuildCommand": "npm --prefix ui run build",
     "frontendDist": "../ui/dist"
   },
   "app": {
-    "windows": [{ "title": "Cupid", "width": 1440, "height": 900, "minWidth": 1080, "minHeight": 700 }],
-    "security": { "csp": null }
+    "windows": [
+      {
+        "title": "Cupid",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1080,
+        "minHeight": 700
+      }
+    ],
+    "security": {
+      "csp": null
+    }
   },
-  "bundle": { "active": false }
+  "bundle": {
+    "active": false
+  }
 }
