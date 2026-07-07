@@ -1,0 +1,8 @@
+/* ============================================================
+   Helios (HDS) Design System — global entry point
+   Consumers link this single file. Imports only.
+   ============================================================ */
+@import "./tokens/colors.css";
+@import "./tokens/typography.css";
+@import "./tokens/spacing.css";
+@import "./tokens/elevation.css";

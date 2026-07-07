@@ -1,0 +1,9 @@
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%; }
+html { background: var(--token-color-page-faint); }
+body { font-family: var(--token-typography-font-stack-display); background: var(--token-color-page-faint); -webkit-font-smoothing: antialiased; }
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-thumb { background: var(--token-color-border-strong); border-radius: 8px; border: 3px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-track { background: transparent; }
+@keyframes cca-spin { to { transform: rotate(360deg); } }
+@keyframes cca-pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }

@@ -1,0 +1,44 @@
+/* ============================================================
+   Helios (HDS) — Spacing, sizing & radius tokens
+   HDS spacing follows a 4px base grid. Layout spacing tokens
+   mirror the scale used across HDS layout components.
+   ============================================================ */
+
+:root {
+  /* ---- Border radius (from HDS tokens) ---- */
+  --token-border-radius-x-small: 3px;
+  --token-border-radius-small: 5px;
+  --token-border-radius-medium: 6px;
+  --token-border-radius-large: 8px;
+
+  /* ---- Spacing scale (4px grid) ---- */
+  --hds-spacing-2:  2px;
+  --hds-spacing-4:  4px;
+  --hds-spacing-6:  6px;
+  --hds-spacing-8:  8px;
+  --hds-spacing-12: 12px;
+  --hds-spacing-16: 16px;
+  --hds-spacing-20: 20px;
+  --hds-spacing-24: 24px;
+  --hds-spacing-32: 32px;
+  --hds-spacing-40: 40px;
+  --hds-spacing-48: 48px;
+  --hds-spacing-64: 64px;
+  --hds-spacing-96: 96px;
+
+  /* ---- Common component sizing ---- */
+  --token-app-header-height: 60px;
+  --token-app-side-nav-body-list-item-height: 36px;
+  --token-tabs-tab-height-medium: 36px;
+  --token-tabs-tab-height-large: 48px;
+  --hds-control-height-small: 28px;
+  --hds-control-height-medium: 36px;
+  --hds-control-height-large: 44px;
+
+  /* ---- Motion (HDS easing curves) ---- */
+  --hds-ease-toggle: cubic-bezier(0.68, -0.2, 0.265, 1.15); /* @kind other */
+  --hds-ease-tabs: cubic-bezier(0.5, 1, 0.89, 1); /* @kind other */
+  --hds-ease-tooltip: cubic-bezier(0.54, 1.5, 0.38, 1.11); /* @kind other */
+  --hds-duration-fast: 0.15s; /* @kind other */
+  --hds-duration-base: 0.2s; /* @kind other */
+}
