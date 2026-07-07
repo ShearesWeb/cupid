@@ -17,7 +17,7 @@ pub fn run(pool: &Pool, appeals: &Appeals) -> MatchResult {
 
     // One ledger and store carry across both passes
     let mut ledger: Ledger = Ledger::new(Algorithm::ImmediateAcceptance);
-    let mut store: CapacityStore = CapacityStore::from_pool(pool);
+    let mut store: CapacityStore = CapacityStore::from_pool(pool, appeals);
 
     immediate_acceptance::run(&ia, appeals, &mut store, &mut ledger);
     ledger.enter(Algorithm::GaleShapley, 0);
@@ -161,6 +161,106 @@ mod tests {
                 .positions_of(ApplicantIdx(1))
                 .contains(&PositionIdx(200))
         );
+    }
+
+    #[test]
+    fn gs_quota_block_is_revisited_after_displacement_frees_quota() {
+        // Ann (id 1) wants three maincomms. She seats M10 and M11 (quota
+        // full), her M12 proposal is quota-blocked, and THEN Bea bumps her
+        // from M10. Deferred acceptance must let Ann come back for M12 once
+        // the displacement frees her quota; a permanent quota rejection
+        // would leave M12 wrongly unfilled.
+        let applicants = vec![
+            Applicant::new(
+                1,
+                "Ann".into(),
+                "a@x".into(),
+                vec![PositionIdx(10), PositionIdx(11), PositionIdx(12)],
+            ),
+            // Bea burns two sweeps on positions that never rank her, reaching
+            // M10 only after Ann's quota is already full.
+            Applicant::new(
+                2,
+                "Bea".into(),
+                "b@x".into(),
+                vec![PositionIdx(90), PositionIdx(91), PositionIdx(10)],
+            ),
+        ];
+        let main = |id: i32, ranking: Vec<ApplicantIdx>| {
+            Position::new(id, Cca::new(0, "C"), format!("M{id}"), None, 1, MainComm, ranking)
+        };
+        let positions = vec![
+            main(10, vec![ApplicantIdx(2), ApplicantIdx(1)]), // chair prefers Bea
+            main(11, vec![ApplicantIdx(1)]),
+            main(12, vec![ApplicantIdx(1)]),
+            main(90, vec![]), // ranks nobody
+            main(91, vec![]),
+        ];
+        let pool = Pool::new(applicants, positions);
+
+        let result = run(&pool, &Appeals::new());
+        let ann = result.positions_of(ApplicantIdx(1)).to_vec();
+        assert!(
+            ann.contains(&PositionIdx(11)) && ann.contains(&PositionIdx(12)),
+            "Ann must hold M11 and M12 after being bumped from M10; held: {ann:?}"
+        );
+        assert_eq!(result.positions_of(ApplicantIdx(2)), &[PositionIdx(10)]);
+        assert!(
+            !result
+                .unfilled(pool.positions())
+                .iter()
+                .any(|&(pid, _)| pid == PositionIdx(12)),
+            "M12 must not be reported unfilled"
+        );
+    }
+
+    #[test]
+    fn runs_are_deterministic_across_identical_inputs() {
+        // HashMap iteration order varies per instance; the passes must not.
+        let build = || {
+            let applicants: Vec<Applicant> = (1..=12)
+                .map(|i| {
+                    Applicant::new(
+                        i,
+                        format!("A{i}"),
+                        format!("a{i}@x"),
+                        vec![PositionIdx(10), PositionIdx(11), PositionIdx(12)],
+                    )
+                })
+                .collect();
+            let ranking: Vec<ApplicantIdx> = (1..=12).map(ApplicantIdx).collect();
+            let positions = vec![
+                Position::new(10, Cca::new(0, "C"), "M".into(), None, 2, MainComm, ranking.clone()),
+                Position::new(11, Cca::new(0, "C"), "S".into(), None, 2, SubComm, ranking.clone()),
+                Position::new(12, Cca::new(0, "C"), "B".into(), None, 2, BlockComm, ranking),
+            ];
+            Pool::new(applicants, positions)
+        };
+
+        let fingerprint = |result: &crate::models::MatchResult| {
+            let allocs: Vec<(i32, i32, u32)> = {
+                let mut v: Vec<_> = result
+                    .all()
+                    .map(|a| (a.applicant_id.0, a.position_id.0, a.accepted_at.seq))
+                    .collect();
+                v.sort();
+                v
+            };
+            let events: Vec<(u32, i32, i32)> = {
+                let mut v: Vec<_> = result
+                    .events()
+                    .map(|e| (e.step.seq, e.applicant_id.0, e.position_id.0))
+                    .collect();
+                v.sort();
+                v
+            };
+            (allocs, events)
+        };
+
+        let first = fingerprint(&run(&build(), &Appeals::new()));
+        for _ in 0..5 {
+            assert_eq!(fingerprint(&run(&build(), &Appeals::new())), first);
+        }
     }
 
     #[test]

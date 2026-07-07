@@ -33,13 +33,16 @@ export interface ReviewProps {
   toast: (kind: ToastKind, text: string) => void;
   running: boolean;
   onRun: () => void;
+  onApplySnapshot: (snap: Snapshot) => void;
 }
 
 export function Review(props: ReviewProps) {
-  const { snapshot, idx, commitState, purgeText, onCommitState, onPurgeText, onOpenMatch, toast, running, onRun } = props;
+  const { snapshot, idx, commitState, purgeText, onCommitState, onPurgeText, onOpenMatch, toast, running, onRun, onApplySnapshot } = props;
   const hasRun = snapshot.run !== null;
 
-  if (!hasRun) {
+  // A successful commit consumes the run (the receipt snapshot has run:
+  // null); the stepper must stay visible so archive and purge can follow.
+  if (!hasRun && !commitState.committed) {
     return (
       <div style={{ padding: "24px 28px 48px", maxWidth: 1120, margin: "0 auto" }}>
         <h1 style={{ margin: "0 0 4px", fontSize: 22, fontWeight: 700, letterSpacing: "-0.4px", color: "var(--token-color-foreground-strong)" }}>
@@ -105,6 +108,7 @@ export function Review(props: ReviewProps) {
         commitState={commitState}
         purgeText={purgeText}
         onCommitState={onCommitState}
+        onApplySnapshot={onApplySnapshot}
         onPurgeText={onPurgeText}
         toast={toast}
         addCount={addCount}
@@ -323,6 +327,7 @@ function FinalizeStepper({
   commitState,
   purgeText,
   onCommitState,
+  onApplySnapshot,
   onPurgeText,
   toast,
   addCount,
@@ -331,6 +336,7 @@ function FinalizeStepper({
   commitState: CommitState;
   purgeText: string;
   onCommitState: ReviewProps["onCommitState"];
+  onApplySnapshot: ReviewProps["onApplySnapshot"];
   onPurgeText: ReviewProps["onPurgeText"];
   toast: ReviewProps["toast"];
   addCount: number;
@@ -351,9 +357,10 @@ function FinalizeStepper({
   const doCommit = async () => {
     setBusyCommit(true);
     try {
-      const n = await api.commit();
-      onCommitState((prev) => ({ ...prev, committed: true, committedCount: n }));
-      toast("success", `Committed ${n}. Sync to reload the system of record.`);
+      const receipt = await api.commit();
+      onApplySnapshot(receipt.snapshot);
+      onCommitState((prev) => ({ ...prev, committed: true, committedCount: receipt.inserted }));
+      toast("success", `Committed ${receipt.inserted} appointments.`);
     } catch (e) {
       toast("error", errorMessage(e));
     } finally {
@@ -378,10 +385,11 @@ function FinalizeStepper({
   const doPurge = async () => {
     setBusyPurge(true);
     try {
-      await api.purge();
+      const receipt = await api.purge();
+      onApplySnapshot(receipt.snapshot);
       onCommitState((prev) => ({ ...prev, purged: true }));
+      toast("success", `Purged ${receipt.deleted} rows.`);
     } catch (e) {
-      // Expected until the backend `purge` command is implemented.
       toast("error", errorMessage(e));
     } finally {
       setBusyPurge(false);
@@ -429,7 +437,7 @@ function FinalizeStepper({
 
       <CommitCard n={3} title="Archive a verified backup" done={commitState.archived} locked={!commitState.committed} danger>
         <div style={{ fontSize: 13, color: "var(--token-color-foreground-primary)", marginBottom: 12 }}>
-          Export a complete backup of all preference & ranking data <strong>before</strong> purging.
+          Export a complete backup of all preference, ranking and appeal data <strong>before</strong> purging.
         </div>
         <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
           <CountPill label="applicants" value={snapshot.applicants.length} />
@@ -494,7 +502,7 @@ function FinalizeStepper({
             >
               <Icon name="alert-triangle" size={18} color="var(--token-color-foreground-critical-on-surface)" />
               <div style={{ fontSize: 12.5, color: "var(--token-color-foreground-critical-on-surface)", lineHeight: 1.5 }}>
-                <strong>Permanently deletes all {totalRows} preference & ranking rows. </strong>
+                <strong>Permanently deletes all {totalRows} preference & ranking rows, plus every appeal. </strong>
                 Cannot be undone. Make sure your archive downloaded.
               </div>
             </div>

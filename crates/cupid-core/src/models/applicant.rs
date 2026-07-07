@@ -1,6 +1,6 @@
 use super::position::PositionIdx;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ApplicantIdx(pub i32);
 
 /// An applicant with a strict preference list over positions, best first.

@@ -59,6 +59,7 @@ export interface UiHandlers {
   setPurgeText: (v: string) => void;
   addAppeal: (applicantId: number, positionId: number, note: string | null) => Promise<boolean>;
   removeAppeal: (applicantId: number, positionId: number) => Promise<boolean>;
+  applySnapshot: (snap: Snapshot) => void;
 }
 
 let toastSeq = 0;
@@ -107,6 +108,7 @@ function App() {
       setPurgeText("");
       setDetail(null);
       setMatch(null);
+      snap.warnings.forEach((w) => toast("error", w));
     } catch (e) {
       toast("error", errorMessage(e));
     } finally {
@@ -158,6 +160,10 @@ function App() {
       return false;
     }
   };
+
+  // Replace the snapshot without touching stepper state: commit and purge
+  // return fresh corpora mid-finalize, and the stepper must keep its place.
+  const applySnapshot = (snap: Snapshot) => setSnapshot(snap);
 
   const openDetail = (type: "applicant" | "position", id: number) => {
     setDetail({ type, id });
@@ -211,6 +217,7 @@ function App() {
     setPurgeText,
     addAppeal,
     removeAppeal,
+    applySnapshot,
   };
 
   if (!snapshot) {
@@ -656,6 +663,7 @@ function Review({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
       toast={handlers.toast}
       running={ui.running}
       onRun={handlers.doRun}
+      onApplySnapshot={handlers.applySnapshot}
     />
   );
 }

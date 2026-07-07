@@ -25,6 +25,8 @@ pub enum Status {
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub synced_at: String,
+    /// Load-time anomalies (e.g. stale appeal rows) surfaced to the operator.
+    pub warnings: Vec<String>,
     pub ccas: Vec<CcaView>,
     pub positions: Vec<PositionView>,
     pub applicants: Vec<ApplicantView>,
@@ -146,7 +148,7 @@ pub enum AssignmentKind {
 pub struct EventView {
     pub applicant_id: i32,
     pub position_id: i32,
-    pub seq: u16,
+    pub seq: u32,
     pub kind: EventKindView,
     pub by_applicant_id: Option<i32>,
     pub detail: String,
@@ -180,9 +182,11 @@ pub fn build(
     appeals: &Appeals,
     result: Option<&MatchResult>,
     synced_at: String,
+    warnings: Vec<String>,
 ) -> Snapshot {
     Snapshot {
         synced_at,
+        warnings,
         ccas: build_ccas(pool),
         positions: build_positions(pool),
         applicants: build_applicants(pool),
@@ -262,7 +266,7 @@ fn build_pairs(pairs: impl Iterator<Item = (ApplicantIdx, PositionIdx)>) -> Vec<
 }
 
 fn build_quota(pool: &Pool, appeals: &Appeals, result: Option<&MatchResult>) -> Vec<QuotaView> {
-    let mut store = CapacityStore::from_pool(pool);
+    let mut store = CapacityStore::from_pool(pool, appeals);
     if let Some(result) = result {
         for alloc in result.all() {
             if let Some(position) = pool.position(alloc.position_id) {
@@ -659,7 +663,7 @@ mod tests {
     #[test]
     fn corpus_views_are_sorted_and_complete() {
         let (pool, appeals) = fixture();
-        let s = build(&pool, &appeals, None, "2026-07-07T00:00:00Z".into());
+        let s = build(&pool, &appeals, None, "2026-07-07T00:00:00Z".into(), vec![]);
         assert_eq!(s.ccas.iter().map(|c| c.id).collect::<Vec<_>>(), vec![1, 2]);
         assert_eq!(s.positions.iter().map(|p| p.id).collect::<Vec<_>>(), vec![10, 11, 20]);
         assert_eq!(s.positions[0].r#type, "main");
@@ -673,7 +677,7 @@ mod tests {
     #[test]
     fn quota_reflects_committed_holdings_pre_run() {
         let (pool, appeals) = fixture();
-        let s = build(&pool, &appeals, None, "t".into());
+        let s = build(&pool, &appeals, None, "t".into(), vec![]);
         let q3 = s.quota.iter().find(|q| q.applicant_id == 3).unwrap();
         assert_eq!((q3.main, q3.block, q3.sub), (0, 1, 0), "appointment to block position 20");
         assert!(q3.can_add_main && q3.can_add_block && q3.can_add_sub);
@@ -685,7 +689,7 @@ mod tests {
     #[test]
     fn seats_pre_run_show_existing_only() {
         let (pool, appeals) = fixture();
-        let s = build(&pool, &appeals, None, "t".into());
+        let s = build(&pool, &appeals, None, "t".into(), vec![]);
         let seat20 = s.seats.iter().find(|x| x.position_id == 20).unwrap();
         assert_eq!(seat20.seated.len(), 1);
         assert_eq!(seat20.seated[0].applicant_id, 3);
@@ -696,7 +700,7 @@ mod tests {
     #[test]
     fn outcomes_pre_run_cover_existing_noreturn_neutral() {
         let (pool, appeals) = fixture();
-        let s = build(&pool, &appeals, None, "t".into());
+        let s = build(&pool, &appeals, None, "t".into(), vec![]);
         let get = |a: i32, p: i32| s.outcomes.iter().find(|o| o.applicant_id == a && o.position_id == p);
         assert_eq!(get(3, 20).unwrap().status, Status::Existing);
         // Chair of Sub(11) ranked Ben, Ben ranked back: neutral pre-run.
@@ -708,7 +712,7 @@ mod tests {
             PositionType::MainComm, vec![ApplicantIdx(1)])];
         let applicants = vec![Applicant::new(1, "Ann".into(), "ann@x".into(), vec![])];
         let pool2 = Pool::new(applicants, positions);
-        let s2 = build(&pool2, &Appeals::new(), None, "t".into());
+        let s2 = build(&pool2, &Appeals::new(), None, "t".into(), vec![]);
         let o = s2.outcomes.iter().find(|o| o.applicant_id == 1 && o.position_id == 30).unwrap();
         assert_eq!(o.status, Status::Noreturn);
         assert_eq!(o.label, "Didn't rank back");
@@ -744,7 +748,7 @@ mod tests {
     #[test]
     fn assignments_carry_kind_and_ranks() {
         let (pool, appeals, result) = run_fixture();
-        let s = build(&pool, &appeals, Some(&result), "t".into());
+        let s = build(&pool, &appeals, Some(&result), "t".into(), vec![]);
         let run = s.run.unwrap();
         let ann = run.assignments.iter().find(|a| a.applicant_id == 1).unwrap();
         assert!(matches!(ann.kind, AssignmentKind::Allocated));
@@ -757,7 +761,7 @@ mod tests {
     #[test]
     fn events_are_seq_ordered_and_include_accepts() {
         let (pool, appeals, result) = run_fixture();
-        let s = build(&pool, &appeals, Some(&result), "t".into());
+        let s = build(&pool, &appeals, Some(&result), "t".into(), vec![]);
         let run = s.run.unwrap();
         let seqs: Vec<_> = run.events.iter().map(|e| e.seq).collect();
         let mut sorted = seqs.clone();
@@ -773,7 +777,7 @@ mod tests {
     #[test]
     fn outcomes_with_run_classify_all_statuses() {
         let (pool, appeals, result) = run_fixture();
-        let s = build(&pool, &appeals, Some(&result), "t".into());
+        let s = build(&pool, &appeals, Some(&result), "t".into(), vec![]);
         let get = |a: i32, p: i32| s.outcomes.iter().find(|o| o.applicant_id == a && o.position_id == p).unwrap();
         assert_eq!(get(1, 10).status, Status::Allocated);
         assert_eq!(get(3, 11).status, Status::Appealed);
@@ -783,7 +787,7 @@ mod tests {
     #[test]
     fn unfilled_reports_open_seats() {
         let (pool, appeals, result) = run_fixture();
-        let s = build(&pool, &appeals, Some(&result), "t".into());
+        let s = build(&pool, &appeals, Some(&result), "t".into(), vec![]);
         let run = s.run.unwrap();
         assert_eq!(run.unfilled, vec![UnfilledView { position_id: 11, open: 1 }]);
     }
@@ -807,7 +811,7 @@ mod tests {
         let mut appeals = Appeals::new();
         appeals.grant(ApplicantIdx(4), PositionIdx(40));
 
-        let s = build(&pool, &appeals, None, "t".into());
+        let s = build(&pool, &appeals, None, "t".into(), vec![]);
         let o = s
             .outcomes
             .iter()
@@ -819,7 +823,7 @@ mod tests {
 
         // With a run, an appealed+assigned pair still classifies as Appealed.
         let (pool, appeals, result) = run_fixture();
-        let s = build(&pool, &appeals, Some(&result), "t".into());
+        let s = build(&pool, &appeals, Some(&result), "t".into(), vec![]);
         let cid = s
             .outcomes
             .iter()
@@ -831,7 +835,7 @@ mod tests {
     #[test]
     fn snapshot_serializes_camel_case_kebab_status() {
         let (pool, appeals, result) = run_fixture();
-        let s = build(&pool, &appeals, Some(&result), "2026-07-07T00:00:00Z".into());
+        let s = build(&pool, &appeals, Some(&result), "2026-07-07T00:00:00Z".into(), vec![]);
         let json = serde_json::to_value(&s).unwrap();
         assert!(json.get("syncedAt").is_some());
         assert_eq!(json["positions"][0]["type"], "main");

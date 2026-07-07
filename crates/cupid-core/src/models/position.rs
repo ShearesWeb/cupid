@@ -5,7 +5,7 @@ use super::allocation::Algorithm;
 use super::applicant::ApplicantIdx;
 use super::cca::Cca;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PositionIdx(pub i32);
 
 /// CCA Positions

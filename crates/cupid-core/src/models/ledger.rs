@@ -9,7 +9,7 @@ use super::position::{Position, PositionIdx};
 pub struct Step {
     pub algorithm: Algorithm,
     pub round: u8,
-    pub seq: u16,
+    pub seq: u32,
 }
 
 /// The write surface used DURING a matching run.

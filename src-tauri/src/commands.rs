@@ -1,9 +1,10 @@
-use cupid::models::{Appeals, ApplicantIdx, Pool, PositionIdx};
+use cupid::models::{ApplicantIdx, Pool, PositionIdx};
 use cupid::snapshot::Snapshot;
 use tauri::State;
 use tauri_plugin_dialog::DialogExt;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+use tokio::task::block_in_place;
 
 use crate::state::{snapshot_of, AppState, Inputs};
 
@@ -14,24 +15,22 @@ pub struct ArchiveReceipt {
     pub rows: usize,
 }
 
-fn now_rfc3339() -> String {
-    OffsetDateTime::now_utc().format(&Rfc3339).expect("rfc3339 format")
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitReceipt {
+    pub inserted: u32,
+    pub snapshot: Snapshot,
 }
 
-/// Reload the corpus and appeals from Postgres.
-/// Invalidates any previous run: the returned snapshot has `run: None`.
-#[tauri::command]
-pub async fn sync(state: State<'_, AppState>) -> Result<Snapshot, String> {
-    let (pool, appeals): (Pool, Appeals) =
-        tauri::async_runtime::spawn_blocking(|| -> Result<_, String> {
-            cupid::data::db::load().map_err(|e| e.to_string())
-        })
-        .await
-        .map_err(|e| e.to_string())??;
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PurgeReceipt {
+    pub deleted: u64,
+    pub snapshot: Snapshot,
+}
 
-    let mut guard = state.inputs.lock().map_err(|e| e.to_string())?;
-    *guard = Some(Inputs { pool, appeals, last_result: None, synced_at: now_rfc3339() });
-    Ok(snapshot_of(guard.as_ref().expect("just set")))
+fn now_rfc3339() -> String {
+    OffsetDateTime::now_utc().format(&Rfc3339).expect("rfc3339 format")
 }
 
 /// Connect to Postgres with the operator credentials.
@@ -43,9 +42,38 @@ fn connect() -> Result<postgres::Client, String> {
     postgres::Client::connect(&url, tls).map_err(|e| e.to_string())
 }
 
+/// Load a complete, fresh input set from the database. Blocking.
+fn load_inputs() -> Result<Inputs, String> {
+    let (pool, appeals, warnings) = cupid::data::db::load().map_err(|e| e.to_string())?;
+    Ok(Inputs { pool, appeals, warnings, last_result: None, synced_at: now_rfc3339() })
+}
+
+/// Reload the corpus and appeals from Postgres.
+/// Invalidates any previous run: the returned snapshot has `run: None`.
+#[tauri::command]
+pub async fn sync(state: State<'_, AppState>) -> Result<Snapshot, String> {
+    let mut guard = state.inputs.lock().await;
+    let inputs = block_in_place(load_inputs)?;
+    *guard = Some(inputs);
+    Ok(snapshot_of(guard.as_ref().expect("just set")))
+}
+
+/// Run the two-pass matching (IA over BlockComm, then GS over Main/Sub)
+/// against the loaded corpus. Stores the result and returns a snapshot
+/// carrying the RunView.
+#[tauri::command]
+pub async fn run_matching(state: State<'_, AppState>) -> Result<Snapshot, String> {
+    let mut guard = state.inputs.lock().await;
+    let inputs = guard.as_mut().ok_or("Sync first: no corpus loaded.")?;
+    inputs.last_result =
+        Some(block_in_place(|| cupid::algorithm::run(&inputs.pool, &inputs.appeals)));
+    Ok(snapshot_of(inputs))
+}
+
 /// Grant a quota-exempt appeal for `(applicant, position)`. Persists to
 /// cca_appeals, updates the in-memory whitelist, and invalidates any run
-/// (its result no longer reflects the appeal set).
+/// (its result no longer reflects the appeal set). The state lock is held
+/// across the DB write, so a concurrent sync cannot interleave.
 #[tauri::command]
 pub async fn add_appeal(
     state: State<'_, AppState>,
@@ -53,47 +81,41 @@ pub async fn add_appeal(
     position_id: i32,
     note: Option<String>,
 ) -> Result<Snapshot, String> {
-    {
-        let guard = state.inputs.lock().map_err(|e| e.to_string())?;
-        let inputs = guard.as_ref().ok_or("Sync first: no corpus loaded.")?;
-        inputs.pool.applicant(ApplicantIdx(applicant_id)).ok_or("Unknown applicant.")?;
-        inputs.pool.position(PositionIdx(position_id)).ok_or("Unknown position.")?;
-    }
-    let db_note = note.clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+    let mut guard = state.inputs.lock().await;
+    let inputs = guard.as_mut().ok_or("Sync first: no corpus loaded.")?;
+    inputs.pool.applicant(ApplicantIdx(applicant_id)).ok_or("Unknown applicant.")?;
+    inputs.pool.position(PositionIdx(position_id)).ok_or("Unknown position.")?;
+
+    block_in_place(|| -> Result<(), String> {
         let mut client = connect()?;
         client
             .execute(
                 "INSERT INTO cca_appeals (user_id, position_id, note) VALUES ($1, $2, $3) \
                  ON CONFLICT (user_id, position_id) DO UPDATE SET note = EXCLUDED.note",
-                &[&applicant_id, &position_id, &db_note],
+                &[&applicant_id, &position_id, &note],
             )
             .map_err(|e| e.to_string())?;
         Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())??;
+    })?;
 
-    let mut guard = state.inputs.lock().map_err(|e| e.to_string())?;
-    let inputs = guard.as_mut().ok_or("Sync first: no corpus loaded.")?;
     inputs.appeals.grant_with_note(ApplicantIdx(applicant_id), PositionIdx(position_id), note);
     inputs.last_result = None;
     Ok(snapshot_of(inputs))
 }
 
 /// Revoke an appeal. Deletes from cca_appeals, updates the in-memory
-/// whitelist, and invalidates any run.
+/// whitelist, and invalidates any run. The state lock is held across the
+/// DB write, so a concurrent sync cannot interleave.
 #[tauri::command]
 pub async fn remove_appeal(
     state: State<'_, AppState>,
     applicant_id: i32,
     position_id: i32,
 ) -> Result<Snapshot, String> {
-    {
-        let guard = state.inputs.lock().map_err(|e| e.to_string())?;
-        guard.as_ref().ok_or("Sync first: no corpus loaded.")?;
-    }
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+    let mut guard = state.inputs.lock().await;
+    let inputs = guard.as_mut().ok_or("Sync first: no corpus loaded.")?;
+
+    block_in_place(|| -> Result<(), String> {
         let mut client = connect()?;
         client
             .execute(
@@ -102,25 +124,10 @@ pub async fn remove_appeal(
             )
             .map_err(|e| e.to_string())?;
         Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())??;
+    })?;
 
-    let mut guard = state.inputs.lock().map_err(|e| e.to_string())?;
-    let inputs = guard.as_mut().ok_or("Sync first: no corpus loaded.")?;
     inputs.appeals.revoke(ApplicantIdx(applicant_id), PositionIdx(position_id));
     inputs.last_result = None;
-    Ok(snapshot_of(inputs))
-}
-
-/// Run the two-pass matching (IA over BlockComm, then GS over Main/Sub)
-/// against the loaded corpus. Stores the result and returns a snapshot
-/// carrying the RunView.
-#[tauri::command]
-pub async fn run_matching(state: State<'_, AppState>) -> Result<Snapshot, String> {
-    let mut guard = state.inputs.lock().map_err(|e| e.to_string())?;
-    let inputs = guard.as_mut().ok_or("Sync first: no corpus loaded.")?;
-    inputs.last_result = Some(cupid::algorithm::run(&inputs.pool, &inputs.appeals));
     Ok(snapshot_of(inputs))
 }
 
@@ -137,25 +144,22 @@ pub fn adds_from(result: &cupid::models::MatchResult, pool: &Pool) -> Vec<(i32, 
     adds
 }
 
-/// Write the run's new allocations to cca_appointments. Transactional and
-/// idempotent: ON CONFLICT (user_id, position_id) DO NOTHING.
+/// Write the run's new allocations to cca_appointments (transactional,
+/// idempotent via ON CONFLICT DO NOTHING), then reload the corpus so the
+/// returned snapshot shows the new appointments as committed. The run is
+/// consumed by the commit; a re-run starts from the fresh corpus.
 #[tauri::command]
-pub async fn commit(state: State<'_, AppState>) -> Result<u32, String> {
-    let adds = {
-        let guard = state.inputs.lock().map_err(|e| e.to_string())?;
-        let inputs = guard.as_ref().ok_or("Sync first: no corpus loaded.")?;
-        let result = inputs.last_result.as_ref().ok_or("Run matching first: nothing to commit.")?;
-        adds_from(result, &inputs.pool)
-    };
+pub async fn commit(state: State<'_, AppState>) -> Result<CommitReceipt, String> {
+    let mut guard = state.inputs.lock().await;
+    let inputs = guard.as_ref().ok_or("Sync first: no corpus loaded.")?;
+    let result = inputs.last_result.as_ref().ok_or("Run matching first: nothing to commit.")?;
+    let adds = adds_from(result, &inputs.pool);
     if adds.is_empty() {
-        return Ok(0);
+        return Ok(CommitReceipt { inserted: 0, snapshot: snapshot_of(inputs) });
     }
-    tauri::async_runtime::spawn_blocking(move || -> Result<u32, String> {
-        let url = std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL must be set")?;
-        let tls = postgres_native_tls::MakeTlsConnector::new(
-            native_tls::TlsConnector::new().map_err(|e| e.to_string())?,
-        );
-        let mut client = postgres::Client::connect(&url, tls).map_err(|e| e.to_string())?;
+
+    let inserted = block_in_place(|| -> Result<u32, String> {
+        let mut client = connect()?;
         let mut tx = client.transaction().map_err(|e| e.to_string())?;
         let mut inserted = 0u32;
         for (user_id, position_id) in &adds {
@@ -169,9 +173,11 @@ pub async fn commit(state: State<'_, AppState>) -> Result<u32, String> {
         }
         tx.commit().map_err(|e| e.to_string())?;
         Ok(inserted)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    })?;
+
+    let fresh = block_in_place(load_inputs)?;
+    *guard = Some(fresh);
+    Ok(CommitReceipt { inserted, snapshot: snapshot_of(guard.as_ref().expect("just set")) })
 }
 
 pub fn archive_rows(pool: &Pool) -> usize {
@@ -184,9 +190,11 @@ pub fn archive_rows(pool: &Pool) -> usize {
 #[tauri::command]
 pub async fn archive(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<ArchiveReceipt, String> {
     let (snapshot, rows) = {
-        let guard = state.inputs.lock().map_err(|e| e.to_string())?;
+        let guard = state.inputs.lock().await;
         let inputs = guard.as_ref().ok_or("Sync first: no corpus loaded.")?;
         (snapshot_of(inputs), archive_rows(&inputs.pool))
+        // Guard drops here: the file dialog can stay open indefinitely and
+        // must not hold up other commands.
     };
     let default_name = format!(
         "cupid-archive-{}.json",
@@ -210,21 +218,18 @@ pub async fn archive(app: tauri::AppHandle, state: State<'_, AppState>) -> Resul
     Ok(ArchiveReceipt { path: path.display().to_string(), rows })
 }
 
-/// Permanently delete every row of both preference tables. Irreversible;
-/// the UI gates this behind a completed archive and a typed confirmation.
+/// Permanently delete every preference row AND every appeal: both are
+/// inputs to the allocation cycle that just ended, and neither may leak
+/// into the next one. The corpus is reloaded afterwards so the returned
+/// snapshot reflects the emptied market. Irreversible; the UI gates this
+/// behind a completed archive and a typed confirmation.
 #[tauri::command]
-pub async fn purge(state: State<'_, AppState>) -> Result<u64, String> {
-    // Refuse before anyone has synced: purging blind would be operator error.
-    {
-        let guard = state.inputs.lock().map_err(|e| e.to_string())?;
-        guard.as_ref().ok_or("Sync first: no corpus loaded.")?;
-    }
-    tauri::async_runtime::spawn_blocking(move || -> Result<u64, String> {
-        let url = std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL must be set")?;
-        let tls = postgres_native_tls::MakeTlsConnector::new(
-            native_tls::TlsConnector::new().map_err(|e| e.to_string())?,
-        );
-        let mut client = postgres::Client::connect(&url, tls).map_err(|e| e.to_string())?;
+pub async fn purge(state: State<'_, AppState>) -> Result<PurgeReceipt, String> {
+    let mut guard = state.inputs.lock().await;
+    guard.as_ref().ok_or("Sync first: no corpus loaded.")?;
+
+    let deleted = block_in_place(|| -> Result<u64, String> {
+        let mut client = connect()?;
         let mut tx = client.transaction().map_err(|e| e.to_string())?;
         let user_rows = tx
             .execute("DELETE FROM cca_user_preferences", &[])
@@ -232,11 +237,16 @@ pub async fn purge(state: State<'_, AppState>) -> Result<u64, String> {
         let position_rows = tx
             .execute("DELETE FROM cca_position_preferences", &[])
             .map_err(|e| e.to_string())?;
+        let appeal_rows = tx
+            .execute("DELETE FROM cca_appeals", &[])
+            .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
-        Ok(user_rows + position_rows)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+        Ok(user_rows + position_rows + appeal_rows)
+    })?;
+
+    let fresh = block_in_place(load_inputs)?;
+    *guard = Some(fresh);
+    Ok(PurgeReceipt { deleted, snapshot: snapshot_of(guard.as_ref().expect("just set")) })
 }
 
 #[cfg(test)]

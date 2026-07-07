@@ -558,6 +558,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "time",
+ "tokio",
 ]
 
 [[package]]

@@ -94,6 +94,7 @@ export interface RunView {
 
 export interface Snapshot {
   syncedAt: string;
+  warnings: string[];
   ccas: CcaView[];
   positions: PositionView[];
   applicants: ApplicantView[];
@@ -103,4 +104,14 @@ export interface Snapshot {
   seats: SeatsView[];
   outcomes: OutcomeView[];
   run: RunView | null;
+}
+
+export interface CommitReceipt {
+  inserted: number;
+  snapshot: Snapshot;
+}
+
+export interface PurgeReceipt {
+  deleted: number;
+  snapshot: Snapshot;
 }

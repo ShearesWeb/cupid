@@ -1,19 +1,25 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::models::{
-    Appeals, ApplicantIdx, CapacityStore, Ledger, PositionIdx, RejectReason, Roster,
+    Appeals, Applicant, ApplicantIdx, CapacityStore, Ledger, PositionIdx, RejectReason, Roster,
 };
 
 /// Pass 1 — Immediate Acceptance (Boston mechanism), BlockComm positions only.
+///
+/// Applicants are swept in id order and positions settled in id order so
+/// identical inputs always produce the identical result, event for event.
 pub fn run(pool: &Roster, appeals: &Appeals, store: &mut CapacityStore, ledger: &mut Ledger) {
+    let mut applicants: Vec<&Applicant> = pool.applicants().collect();
+    applicants.sort_by_key(|a| a.id.0);
+
     let mut rank: usize = 0;
 
     loop {
         // Each applicant proposes to their rank-th preference.
-        let mut proposals: HashMap<PositionIdx, HashSet<ApplicantIdx>> = HashMap::new();
+        let mut proposals: BTreeMap<PositionIdx, BTreeSet<ApplicantIdx>> = BTreeMap::new();
         let mut progressed = false;
 
-        for applicant in pool.applicants() {
+        for applicant in &applicants {
             let Some(&pid) = applicant.preferences().get(rank) else {
                 continue;
             };
@@ -46,7 +52,7 @@ pub fn run(pool: &Roster, appeals: &Appeals, store: &mut CapacityStore, ledger: 
             let mut seats_left = position.vacancies() - ledger.holder_count(*pid);
 
             // Walk chair ranking (best first) so seats go to top proposers.
-            let mut seated: HashSet<ApplicantIdx> = HashSet::new();
+            let mut seated: BTreeSet<ApplicantIdx> = BTreeSet::new();
             for &cand in position.ranking() {
                 if seats_left == 0 {
                     break;

@@ -1,6 +1,3 @@
 /target
-/data/*
-!/data/appeals/
-/data/appeals/*
-!/data/appeals/appeals.example.csv
+/data/
 /docs/

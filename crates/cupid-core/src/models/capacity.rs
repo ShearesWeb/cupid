@@ -88,12 +88,18 @@ impl CapacityStore {
         }
     }
 
-    /// Seed every holder's tally from existing appointments.
-    pub fn from_pool(pool: &Pool) -> Self {
+    /// Seed every holder's tally from existing appointments. An appointment
+    /// whose pair is appealed stays quota-exempt even after it was committed:
+    /// it lands in the exempt bucket, not the type tally.
+    pub fn from_pool(pool: &Pool, appeals: &Appeals) -> Self {
         let mut store = CapacityStore::new();
         for appointment in pool.appointments().iter() {
             if let Some(position) = pool.position(appointment.position) {
-                store.grant(appointment.applicant, position.position_type, false);
+                store.grant(
+                    appointment.applicant,
+                    position.position_type,
+                    appeals.contains(appointment.applicant, appointment.position),
+                );
             }
         }
         store
@@ -282,10 +288,21 @@ mod tests {
         ]);
         let pool = Pool::new(applicants, positions).with_appointments(appointments);
 
-        let store = CapacityStore::from_pool(&pool);
+        let store = CapacityStore::from_pool(&pool, &Appeals::new());
         let counts = store.get(ApplicantIdx(1));
         assert_eq!(counts.maincomm, 1);
         assert_eq!(counts.subcomm, 1);
+
+        // A committed appointment whose pair is appealed stays quota-exempt:
+        // it must land in the appealed bucket, not the type tally, or the
+        // applicant reads permanently over-quota after commit + re-sync.
+        let mut appeals = Appeals::new();
+        appeals.grant(ApplicantIdx(1), PositionIdx(20));
+        let store = CapacityStore::from_pool(&pool, &appeals);
+        let counts = store.get(ApplicantIdx(1));
+        assert_eq!(counts.maincomm, 1);
+        assert_eq!(counts.subcomm, 0, "appealed appointment skips the sub tally");
+        assert_eq!(counts.appealed, 1);
     }
 
     #[test]
