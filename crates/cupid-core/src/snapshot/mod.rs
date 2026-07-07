@@ -368,8 +368,8 @@ fn accept_detail(alloc: &Allocation) -> String {
 /// seq) > didn't-rank-back > neutral.
 fn build_outcomes(pool: &Pool, appeals: &Appeals, result: Option<&MatchResult>) -> Vec<OutcomeView> {
     // Pair universe: every applicant's preferences, every position's chair
-    // ranking, every committed appointment, and (with a run) every assignment
-    // and event pair, deduped and sorted.
+    // ranking, every committed appointment, every appeal, and (with a run)
+    // every assignment and event pair, deduped and sorted.
     let mut pairs: BTreeSet<(i32, i32)> = BTreeSet::new();
     for a in pool.applicants() {
         for &p in a.preferences() {
@@ -383,6 +383,9 @@ fn build_outcomes(pool: &Pool, appeals: &Appeals, result: Option<&MatchResult>) 
     }
     for appointment in pool.appointments().iter() {
         pairs.insert((appointment.applicant.0, appointment.position.0));
+    }
+    for (a, p) in appeals.iter() {
+        pairs.insert((a.0, p.0));
     }
     if let Some(result) = result {
         for alloc in result.all() {
@@ -494,11 +497,13 @@ fn build_outcomes(pool: &Pool, appeals: &Appeals, result: Option<&MatchResult>) 
                 }
             }
 
-            // 5. Applicant never ranked this position back.
+            // 5. Applicant never ranked this position back. An appeal on the
+            // pair bypasses this: it exists precisely to grant entry without
+            // reciprocal ranking, so it shouldn't get flagged as a no-return.
             let applicant = pool.applicant(applicant_id);
             let ranked_back =
                 applicant.is_some_and(|a| a.preferences().contains(&position_id));
-            if !ranked_back {
+            if !ranked_back && !appeals.contains(applicant_id, position_id) {
                 let prefs_len = applicant.map_or(0, |a| a.preferences().len());
                 return OutcomeView {
                     applicant_id: aid,
@@ -760,6 +765,46 @@ mod tests {
         let s = build(&pool, &appeals, Some(&result), "t".into());
         let run = s.run.unwrap();
         assert_eq!(run.unfilled, vec![UnfilledView { position_id: 11, open: 1 }]);
+    }
+
+    #[test]
+    fn appeal_only_pair_gets_an_outcome() {
+        // Applicant never ranked the position, chair never ranked the
+        // applicant: only an appeal links the pair. Pre-run, it must still
+        // surface as a neutral, unclassified outcome rather than vanish.
+        let position = Position::new(
+            40,
+            Cca::new(1, "Chess"),
+            "Ghost".into(),
+            None,
+            1,
+            PositionType::MainComm,
+            vec![],
+        );
+        let applicant = Applicant::new(4, "Dee".into(), "dee@x".into(), vec![]);
+        let pool = Pool::new(vec![applicant], vec![position]);
+        let mut appeals = Appeals::new();
+        appeals.grant(ApplicantIdx(4), PositionIdx(40));
+
+        let s = build(&pool, &appeals, None, "t".into());
+        let o = s
+            .outcomes
+            .iter()
+            .find(|o| o.applicant_id == 4 && o.position_id == 40)
+            .unwrap_or_else(|| panic!("appeal-only pair (4, 40) missing from outcomes"));
+        assert_eq!(o.status, Status::Neutral);
+        assert_eq!(o.label, "—");
+        assert_eq!(o.detail, "Run matching to see the outcome.");
+
+        // With a run, an appealed+assigned pair still classifies as Appealed.
+        let (pool, appeals, result) = run_fixture();
+        let s = build(&pool, &appeals, Some(&result), "t".into());
+        let cid = s
+            .outcomes
+            .iter()
+            .find(|o| o.applicant_id == 3 && o.position_id == 11)
+            .unwrap();
+        assert_eq!(cid.status, Status::Appealed);
     }
 
     #[test]
