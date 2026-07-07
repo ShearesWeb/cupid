@@ -7,7 +7,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(state::AppState::default())
-        .invoke_handler(tauri::generate_handler![commands::sync])
+        .invoke_handler(tauri::generate_handler![commands::sync, commands::commit])
         .run(tauri::generate_context!())
         .expect("error while running cupid");
 }
