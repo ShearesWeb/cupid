@@ -45,6 +45,17 @@ pub async fn sync(state: State<'_, AppState>) -> Result<Snapshot, String> {
     Ok(snapshot_of(guard.as_ref().expect("just set")))
 }
 
+/// Run the two-pass matching (IA over BlockComm, then GS over Main/Sub)
+/// against the loaded corpus. Stores the result and returns a snapshot
+/// carrying the RunView.
+#[tauri::command]
+pub async fn run_matching(state: State<'_, AppState>) -> Result<Snapshot, String> {
+    let mut guard = state.inputs.lock().map_err(|e| e.to_string())?;
+    let inputs = guard.as_mut().ok_or("Sync first: no corpus loaded.")?;
+    inputs.last_result = Some(cupid::algorithm::run(&inputs.pool, &inputs.appeals));
+    Ok(snapshot_of(inputs))
+}
+
 /// New (applicant, position) pairs this run wants to write: every settled
 /// allocation that is not already an existing appointment. Adds-only by
 /// construction; nothing is ever updated or deleted.
@@ -129,6 +140,35 @@ pub async fn archive(app: tauri::AppHandle, state: State<'_, AppState>) -> Resul
     std::fs::write(&path, serde_json::to_vec_pretty(&export).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
     Ok(ArchiveReceipt { path: path.display().to_string(), rows })
+}
+
+/// Permanently delete every row of both preference tables. Irreversible;
+/// the UI gates this behind a completed archive and a typed confirmation.
+#[tauri::command]
+pub async fn purge(state: State<'_, AppState>) -> Result<u64, String> {
+    // Refuse before anyone has synced: purging blind would be operator error.
+    {
+        let guard = state.inputs.lock().map_err(|e| e.to_string())?;
+        guard.as_ref().ok_or("Sync first: no corpus loaded.")?;
+    }
+    tauri::async_runtime::spawn_blocking(move || -> Result<u64, String> {
+        let url = std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL must be set")?;
+        let tls = postgres_native_tls::MakeTlsConnector::new(
+            native_tls::TlsConnector::new().map_err(|e| e.to_string())?,
+        );
+        let mut client = postgres::Client::connect(&url, tls).map_err(|e| e.to_string())?;
+        let mut tx = client.transaction().map_err(|e| e.to_string())?;
+        let user_rows = tx
+            .execute("DELETE FROM cca_user_preferences", &[])
+            .map_err(|e| e.to_string())?;
+        let position_rows = tx
+            .execute("DELETE FROM cca_position_preferences", &[])
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(user_rows + position_rows)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]
