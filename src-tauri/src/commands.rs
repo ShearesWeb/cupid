@@ -3,10 +3,18 @@ use std::path::PathBuf;
 use cupid::models::{Appeals, Pool};
 use cupid::snapshot::Snapshot;
 use tauri::State;
+use tauri_plugin_dialog::DialogExt;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use crate::state::{snapshot_of, AppState, Inputs};
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveReceipt {
+    pub path: String,
+    pub rows: usize,
+}
 
 fn appeals_dir() -> PathBuf {
     std::env::var("CUPID_APPEALS_DIR")
@@ -87,10 +95,58 @@ pub async fn commit(state: State<'_, AppState>) -> Result<u32, String> {
     .map_err(|e| e.to_string())?
 }
 
+pub fn archive_rows(pool: &Pool) -> usize {
+    pool.applicants().map(|a| a.preferences().len()).sum::<usize>()
+        + pool.positions().map(|p| p.ranking().len()).sum::<usize>()
+}
+
+/// Export a full verified backup (corpus + committed + run) as JSON via a
+/// native save dialog. Must run before purge.
+#[tauri::command]
+pub async fn archive(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<ArchiveReceipt, String> {
+    let (snapshot, rows) = {
+        let guard = state.inputs.lock().map_err(|e| e.to_string())?;
+        let inputs = guard.as_ref().ok_or("Sync first: no corpus loaded.")?;
+        (snapshot_of(inputs), archive_rows(&inputs.pool))
+    };
+    let default_name = format!(
+        "cupid-archive-{}.json",
+        &now_rfc3339()[..10] // YYYY-MM-DD
+    );
+    let path = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog().file().set_file_name(&default_name).blocking_save_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or("cancelled")?;
+    let path = path.into_path().map_err(|e| e.to_string())?;
+
+    let export = serde_json::json!({
+        "exportedAt": now_rfc3339(),
+        "rows": rows,
+        "snapshot": snapshot,
+    });
+    std::fs::write(&path, serde_json::to_vec_pretty(&export).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    Ok(ArchiveReceipt { path: path.display().to_string(), rows })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use cupid::models::*;
+
+    #[test]
+    fn archive_rows_counts_prefs_plus_rankings() {
+        let positions = vec![Position::new(10, Cca::new(1, "C"), "P".into(), None, 1,
+            PositionType::MainComm, vec![ApplicantIdx(1), ApplicantIdx(2)])];
+        let applicants = vec![
+            Applicant::new(1, "A".into(), "a@x".into(), vec![PositionIdx(10)]),
+            Applicant::new(2, "B".into(), "b@x".into(), vec![]),
+        ];
+        let pool = Pool::new(applicants, positions);
+        assert_eq!(archive_rows(&pool), 3, "1 pref row + 2 ranking rows");
+    }
 
     #[test]
     fn adds_exclude_pairs_already_appointed() {
