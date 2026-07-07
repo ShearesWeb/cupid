@@ -117,6 +117,8 @@ function App() {
     try {
       const snap = await api.runMatching();
       setSnapshot(snap);
+      setCommitState(initialCommitState);
+      setPurgeText("");
     } catch (e) {
       toast("error", errorMessage(e));
     } finally {
