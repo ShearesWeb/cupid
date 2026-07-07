@@ -1,11 +1,12 @@
 //! The one immutable read model. `build` projects the corpus plus an optional
 //! match run into a serializable Snapshot; every UI query becomes a lookup.
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use serde::Serialize;
 
 use crate::models::{
-    Appeals, ApplicantIdx, CapacityStore, MatchResult, Pool, PositionIdx, PositionType,
+    Allocation, Appeals, ApplicantIdx, CapacityStore, Event, EventKind, MatchResult, Pool,
+    PositionIdx, PositionType, RejectReason,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -107,8 +108,6 @@ pub struct OutcomeView {
     pub detail: String,
 }
 
-/// Task 5 fills these in from a real `MatchResult`; Task 4 only needs the
-/// shape to exist so `Snapshot` compiles with `run: None`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunView {
@@ -117,29 +116,47 @@ pub struct RunView {
     pub unfilled: Vec<UnfilledView>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssignmentView {
     pub applicant_id: i32,
     pub position_id: i32,
-    pub applicant_rank: Option<usize>,
+    pub kind: AssignmentKind,
     pub chair_rank: Option<usize>,
+    pub pref_rank: Option<usize>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AssignmentKind {
+    Allocated,
+    Appealed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventView {
     pub applicant_id: i32,
     pub position_id: i32,
-    pub label: String,
+    pub seq: u16,
+    pub kind: EventKindView,
+    pub by_applicant_id: Option<i32>,
     pub detail: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EventKindView {
+    Accept,
+    Reject,
+    Displace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnfilledView {
     pub position_id: i32,
-    pub empty: usize,
+    pub open: usize,
 }
 
 fn type_str(t: PositionType) -> &'static str {
@@ -305,15 +322,54 @@ fn build_seats(pool: &Pool, appeals: &Appeals, result: Option<&MatchResult>) -> 
         .collect()
 }
 
-/// Pre-run outcome classification. Task 5 adds the run-aware arms (allocated,
-/// appealed, displaced, quota-blocked) once `result` carries real allocations.
-fn build_outcomes(
-    pool: &Pool,
-    _appeals: &Appeals,
-    _result: Option<&MatchResult>,
-) -> Vec<OutcomeView> {
+/// The applicant's name, or a placeholder if the id is somehow unknown.
+fn name_of(pool: &Pool, id: ApplicantIdx) -> String {
+    pool.applicant(id)
+        .map(|a| a.name.clone())
+        .unwrap_or_else(|| format!("Applicant {}", id.0))
+}
+
+fn rank_text(rank: Option<usize>) -> String {
+    rank.map_or_else(|| "unranked".to_string(), |r| r.to_string())
+}
+
+/// Fixed detail text for a rejection reason (shared by events and outcomes).
+fn reject_detail(reason: RejectReason) -> &'static str {
+    match reason {
+        RejectReason::NotRankedByChair => "Chair did not rank this applicant.",
+        RejectReason::RoleCapacityFull => "Position full at this point in the run.",
+        RejectReason::ApplicantCapacityFull => {
+            "Quota full at this point in the run: another seat here would exceed the personal quota."
+        }
+        RejectReason::DisplacedByHigherRank => "Chair preferred others who took the seats.",
+    }
+}
+
+/// Detail text for a displacement (shared by events and outcomes).
+fn displaced_detail(pool: &Pool, by: ApplicantIdx, by_chair_rank: Option<usize>) -> String {
+    format!(
+        "Displaced by {} (chair-rank {}).",
+        name_of(pool, by),
+        rank_text(by_chair_rank)
+    )
+}
+
+/// Detail text for a successful allocation.
+fn accept_detail(alloc: &Allocation) -> String {
+    format!(
+        "Allocated at chair-rank {} (their preference #{}).",
+        rank_text(alloc.chair_rank),
+        rank_text(alloc.applicant_rank)
+    )
+}
+
+/// Outcome classification, pre-run and run-aware. Precedence per pair:
+/// committed > appealed assignment > allocated assignment > last event (by
+/// seq) > didn't-rank-back > neutral.
+fn build_outcomes(pool: &Pool, appeals: &Appeals, result: Option<&MatchResult>) -> Vec<OutcomeView> {
     // Pair universe: every applicant's preferences, every position's chair
-    // ranking, and every committed appointment, deduped and sorted.
+    // ranking, every committed appointment, and (with a run) every assignment
+    // and event pair, deduped and sorted.
     let mut pairs: BTreeSet<(i32, i32)> = BTreeSet::new();
     for a in pool.applicants() {
         for &p in a.preferences() {
@@ -328,6 +384,37 @@ fn build_outcomes(
     for appointment in pool.appointments().iter() {
         pairs.insert((appointment.applicant.0, appointment.position.0));
     }
+    if let Some(result) = result {
+        for alloc in result.all() {
+            pairs.insert((alloc.applicant_id.0, alloc.position_id.0));
+        }
+        for event in result.events() {
+            pairs.insert((event.applicant_id.0, event.position_id.0));
+        }
+    }
+
+    // Index assignments and the last (highest-seq) event per pair, once.
+    let assignment_by_pair: HashMap<(i32, i32), &Allocation> = result
+        .map(|r| {
+            r.all()
+                .map(|a| ((a.applicant_id.0, a.position_id.0), a))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut last_event_by_pair: HashMap<(i32, i32), &Event> = HashMap::new();
+    if let Some(result) = result {
+        for event in result.events() {
+            let key = (event.applicant_id.0, event.position_id.0);
+            last_event_by_pair
+                .entry(key)
+                .and_modify(|current| {
+                    if event.step.seq > current.step.seq {
+                        *current = event;
+                    }
+                })
+                .or_insert(event);
+        }
+    }
 
     pairs
         .into_iter()
@@ -335,6 +422,7 @@ fn build_outcomes(
             let applicant_id = ApplicantIdx(aid);
             let position_id = PositionIdx(pid);
 
+            // 1. Already a committed appointment.
             if pool
                 .appointments()
                 .holders(position_id)
@@ -349,6 +437,64 @@ fn build_outcomes(
                 };
             }
 
+            if result.is_some() {
+                // 2/3. Assignment this run, appealed or plain allocation.
+                if assignment_by_pair.contains_key(&(aid, pid)) {
+                    if appeals.contains(applicant_id, position_id) {
+                        return OutcomeView {
+                            applicant_id: aid,
+                            position_id: pid,
+                            status: Status::Appealed,
+                            label: "Appeal".into(),
+                            detail: "Allocated via appeal, exempt from quota.".into(),
+                        };
+                    }
+                    return OutcomeView {
+                        applicant_id: aid,
+                        position_id: pid,
+                        status: Status::Allocated,
+                        label: "Allocated".into(),
+                        detail: "Newly allocated by this run.".into(),
+                    };
+                }
+
+                // 4. Last event for the pair.
+                if let Some(&event) = last_event_by_pair.get(&(aid, pid)) {
+                    let (status, label, detail) = match event.kind {
+                        EventKind::Displaced { by, by_chair_rank } => (
+                            Status::Displaced,
+                            "Displaced",
+                            displaced_detail(pool, by, by_chair_rank),
+                        ),
+                        EventKind::Rejected {
+                            reason: RejectReason::ApplicantCapacityFull,
+                        } => (
+                            Status::Quota,
+                            "Quota full",
+                            reject_detail(RejectReason::ApplicantCapacityFull).to_string(),
+                        ),
+                        EventKind::Rejected {
+                            reason: RejectReason::NotRankedByChair,
+                        } => (
+                            Status::Neutral,
+                            "Not ranked",
+                            reject_detail(RejectReason::NotRankedByChair).to_string(),
+                        ),
+                        EventKind::Rejected { reason } => {
+                            (Status::Neutral, "Position full", reject_detail(reason).to_string())
+                        }
+                    };
+                    return OutcomeView {
+                        applicant_id: aid,
+                        position_id: pid,
+                        status,
+                        label: label.into(),
+                        detail,
+                    };
+                }
+            }
+
+            // 5. Applicant never ranked this position back.
             let applicant = pool.applicant(applicant_id);
             let ranked_back =
                 applicant.is_some_and(|a| a.preferences().contains(&position_id));
@@ -365,22 +511,95 @@ fn build_outcomes(
                 };
             }
 
-            OutcomeView {
-                applicant_id: aid,
-                position_id: pid,
-                status: Status::Neutral,
-                label: "—".into(),
-                detail: "Run matching to see the outcome.".into(),
+            // 6. Otherwise: neutral, phrased pre-run vs. post-run.
+            if result.is_some() {
+                OutcomeView {
+                    applicant_id: aid,
+                    position_id: pid,
+                    status: Status::Neutral,
+                    label: "Not allocated".into(),
+                    detail: "Not allocated in this run.".into(),
+                }
+            } else {
+                OutcomeView {
+                    applicant_id: aid,
+                    position_id: pid,
+                    status: Status::Neutral,
+                    label: "—".into(),
+                    detail: "Run matching to see the outcome.".into(),
+                }
             }
         })
         .collect()
 }
 
-fn build_run(_pool: &Pool, _appeals: &Appeals, _result: &MatchResult) -> RunView {
+fn build_run(pool: &Pool, appeals: &Appeals, result: &MatchResult) -> RunView {
+    let mut assignments: Vec<AssignmentView> = result
+        .all()
+        .map(|alloc| {
+            let kind = if appeals.contains(alloc.applicant_id, alloc.position_id) {
+                AssignmentKind::Appealed
+            } else {
+                AssignmentKind::Allocated
+            };
+            AssignmentView {
+                applicant_id: alloc.applicant_id.0,
+                position_id: alloc.position_id.0,
+                kind,
+                chair_rank: alloc.chair_rank,
+                pref_rank: alloc.applicant_rank,
+            }
+        })
+        .collect();
+    assignments.sort_by_key(|a| (a.position_id, a.applicant_id));
+
+    let mut events: Vec<EventView> = Vec::new();
+    for event in result.events() {
+        let (kind, by_applicant_id, detail) = match event.kind {
+            EventKind::Rejected { reason } => {
+                (EventKindView::Reject, None, reject_detail(reason).to_string())
+            }
+            EventKind::Displaced { by, by_chair_rank } => (
+                EventKindView::Displace,
+                Some(by.0),
+                displaced_detail(pool, by, by_chair_rank),
+            ),
+        };
+        events.push(EventView {
+            applicant_id: event.applicant_id.0,
+            position_id: event.position_id.0,
+            seq: event.step.seq,
+            kind,
+            by_applicant_id,
+            detail,
+        });
+    }
+    for alloc in result.all() {
+        events.push(EventView {
+            applicant_id: alloc.applicant_id.0,
+            position_id: alloc.position_id.0,
+            seq: alloc.accepted_at.seq,
+            kind: EventKindView::Accept,
+            by_applicant_id: None,
+            detail: accept_detail(alloc),
+        });
+    }
+    events.sort_by_key(|e| e.seq);
+
+    let mut unfilled: Vec<UnfilledView> = result
+        .unfilled(pool.positions())
+        .into_iter()
+        .map(|(position_id, open)| UnfilledView {
+            position_id: position_id.0,
+            open,
+        })
+        .collect();
+    unfilled.sort_by_key(|u| u.position_id);
+
     RunView {
-        assignments: vec![],
-        events: vec![],
-        unfilled: vec![],
+        assignments,
+        events,
+        unfilled,
     }
 }
 
@@ -467,5 +686,90 @@ mod tests {
         let o = s2.outcomes.iter().find(|o| o.applicant_id == 1 && o.position_id == 30).unwrap();
         assert_eq!(o.status, Status::Noreturn);
         assert_eq!(o.label, "Didn't rank back");
+    }
+
+    fn run_fixture() -> (Pool, Appeals, MatchResult) {
+        // One main seat (10), chair ranks Ann then Ben, both want it:
+        // Ben proposes, seated, then displaced by Ann. Cid appeals into Sub(11).
+        let positions = vec![
+            Position::new(10, Cca::new(1, "Chess"), "Head".into(), None, 1, PositionType::MainComm,
+                vec![ApplicantIdx(1), ApplicantIdx(2)]),
+            Position::new(11, Cca::new(1, "Chess"), "Sub".into(), None, 2, PositionType::SubComm,
+                vec![ApplicantIdx(3)]),
+        ];
+        let applicants = vec![
+            Applicant::new(1, "Ann".into(), "ann@x".into(), vec![PositionIdx(10)]),
+            Applicant::new(2, "Ben".into(), "ben@x".into(), vec![PositionIdx(10)]),
+            Applicant::new(3, "Cid".into(), "cid@x".into(), vec![PositionIdx(11)]),
+        ];
+        let mut appeals = Appeals::new();
+        appeals.grant(ApplicantIdx(3), PositionIdx(11));
+
+        let mut ledger = Ledger::new(Algorithm::GaleShapley);
+        ledger.accept(&applicants[1], &positions[0]);                // seq 0: Ben seated
+        ledger.bump(&applicants[0], ApplicantIdx(2), &positions[0]); // seq 1 displace + seq 2 accept
+        ledger.accept(&applicants[2], &positions[1]);                // seq 3: Cid (appealed pair)
+        let result = ledger.finish();
+
+        let pool = Pool::new(applicants, positions);
+        (pool, appeals, result)
+    }
+
+    #[test]
+    fn assignments_carry_kind_and_ranks() {
+        let (pool, appeals, result) = run_fixture();
+        let s = build(&pool, &appeals, Some(&result), "t".into());
+        let run = s.run.unwrap();
+        let ann = run.assignments.iter().find(|a| a.applicant_id == 1).unwrap();
+        assert!(matches!(ann.kind, AssignmentKind::Allocated));
+        assert_eq!(ann.chair_rank, Some(1));
+        assert_eq!(ann.pref_rank, Some(1));
+        let cid = run.assignments.iter().find(|a| a.applicant_id == 3).unwrap();
+        assert!(matches!(cid.kind, AssignmentKind::Appealed));
+    }
+
+    #[test]
+    fn events_are_seq_ordered_and_include_accepts() {
+        let (pool, appeals, result) = run_fixture();
+        let s = build(&pool, &appeals, Some(&result), "t".into());
+        let run = s.run.unwrap();
+        let seqs: Vec<_> = run.events.iter().map(|e| e.seq).collect();
+        let mut sorted = seqs.clone();
+        sorted.sort();
+        assert_eq!(seqs, sorted, "global seq order");
+        assert!(run.events.iter().any(|e| matches!(e.kind, EventKindView::Accept)));
+        let displace = run.events.iter().find(|e| matches!(e.kind, EventKindView::Displace)).unwrap();
+        assert_eq!(displace.applicant_id, 2, "Ben was displaced");
+        assert_eq!(displace.by_applicant_id, Some(1));
+        assert!(displace.detail.contains("Ann"), "detail names the displacer: {}", displace.detail);
+    }
+
+    #[test]
+    fn outcomes_with_run_classify_all_statuses() {
+        let (pool, appeals, result) = run_fixture();
+        let s = build(&pool, &appeals, Some(&result), "t".into());
+        let get = |a: i32, p: i32| s.outcomes.iter().find(|o| o.applicant_id == a && o.position_id == p).unwrap();
+        assert_eq!(get(1, 10).status, Status::Allocated);
+        assert_eq!(get(3, 11).status, Status::Appealed);
+        assert_eq!(get(2, 10).status, Status::Displaced);
+    }
+
+    #[test]
+    fn unfilled_reports_open_seats() {
+        let (pool, appeals, result) = run_fixture();
+        let s = build(&pool, &appeals, Some(&result), "t".into());
+        let run = s.run.unwrap();
+        assert_eq!(run.unfilled, vec![UnfilledView { position_id: 11, open: 1 }]);
+    }
+
+    #[test]
+    fn snapshot_serializes_camel_case_kebab_status() {
+        let (pool, appeals, result) = run_fixture();
+        let s = build(&pool, &appeals, Some(&result), "2026-07-07T00:00:00Z".into());
+        let json = serde_json::to_value(&s).unwrap();
+        assert!(json.get("syncedAt").is_some());
+        assert_eq!(json["positions"][0]["type"], "main");
+        assert_eq!(json["outcomes"].as_array().unwrap().iter()
+            .find(|o| o["applicantId"] == 2 && o["positionId"] == 10).unwrap()["status"], "displaced");
     }
 }

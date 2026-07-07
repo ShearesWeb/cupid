@@ -13,7 +13,7 @@ mod ledger;
 mod pool;
 mod position;
 
-pub use allocation::{Algorithm, MatchResult, RejectReason};
+pub use allocation::{Algorithm, Allocation, Event, EventKind, MatchResult, RejectReason};
 pub use applicant::{Applicant, ApplicantIdx};
 pub use appointment::{Appointment, Appointments};
 pub use capacity::{Appeals, CapacityStore};
