@@ -10,7 +10,7 @@ export interface DetailPageProps {
   detail: { type: "applicant" | "position"; id: number };
   snapshot: Snapshot;
   idx: Indexes;
-  screen: "alloc" | "review";
+  screen: "alloc" | "appeals" | "review";
   onBack: () => void;
   onOpenMatch: (aid: number, pid: number) => void;
   onOpenDetail: (type: "applicant" | "position", id: number) => void;
@@ -41,7 +41,7 @@ export function DetailPage(props: DetailPageProps) {
         }}
       >
         <Icon name="chevron-left" size={15} color="var(--token-color-foreground-strong)" />
-        Back to {screen === "alloc" ? "allocations" : "review"}
+        Back to {screen === "alloc" ? "allocations" : screen === "appeals" ? "appeals" : "review"}
       </button>
       <Card padding="large">
         {isApp ? (

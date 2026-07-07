@@ -23,6 +23,12 @@ export interface ApplicantView {
   prefs: number[];
 }
 
+export interface AppealView {
+  applicantId: number;
+  positionId: number;
+  note: string | null;
+}
+
 export interface PairView {
   applicantId: number;
   positionId: number;
@@ -92,7 +98,7 @@ export interface Snapshot {
   positions: PositionView[];
   applicants: ApplicantView[];
   committed: PairView[];
-  appeals: PairView[];
+  appeals: AppealView[];
   quota: QuotaView[];
   seats: SeatsView[];
   outcomes: OutcomeView[];

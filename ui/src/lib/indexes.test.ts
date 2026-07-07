@@ -15,7 +15,7 @@ const snap: Snapshot = {
     { id: 3, name: "Cid", email: "cid@x", prefs: [11] },
   ],
   committed: [{ applicantId: 3, positionId: 11 }],
-  appeals: [{ applicantId: 3, positionId: 11 }],
+  appeals: [{ applicantId: 3, positionId: 11, note: null }],
   quota: [
     { applicantId: 1, main: 1, block: 0, sub: 0, appealed: 0,
       canAddMain: true, canAddBlock: true, canAddSub: true, over: false },

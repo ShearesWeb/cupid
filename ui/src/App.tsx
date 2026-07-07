@@ -9,11 +9,12 @@ import { errorMessage, fmtTime } from "./lib/format.ts";
 import { Icon, Card, Button } from "./components/index.ts";
 import { Toasts, type ToastItem, type ToastKind } from "./components/Toasts.tsx";
 import { Allocations as AllocationsScreen } from "./screens/Allocations.tsx";
+import { Appeals as AppealsScreen } from "./screens/Appeals.tsx";
 import { DetailPage as DetailPageScreen } from "./screens/DetailPage.tsx";
 import { EventSidebar as EventSidebarScreen } from "./screens/EventSidebar.tsx";
 import { Review as ReviewScreen, type CommitState } from "./screens/Review.tsx";
 
-type Screen = "alloc" | "review";
+type Screen = "alloc" | "appeals" | "review";
 type View = "position" | "applicant";
 type Detail = { type: "applicant" | "position"; id: number } | null;
 type Match = { aid: number; pid: number } | null;
@@ -56,6 +57,8 @@ export interface UiHandlers {
   toast: (kind: ToastKind, text: string) => void;
   setCommitState: (s: CommitState | ((prev: CommitState) => CommitState)) => void;
   setPurgeText: (v: string) => void;
+  addAppeal: (applicantId: number, positionId: number, note: string | null) => Promise<boolean>;
+  removeAppeal: (applicantId: number, positionId: number) => Promise<boolean>;
 }
 
 let toastSeq = 0;
@@ -126,6 +129,36 @@ function App() {
     }
   };
 
+  // Appeal changes invalidate the run server-side (the snapshot comes back
+  // with run: null), so the review stepper resets alongside it.
+  const addAppeal = async (applicantId: number, positionId: number, note: string | null) => {
+    try {
+      const snap = await api.addAppeal(applicantId, positionId, note);
+      setSnapshot(snap);
+      setCommitState(initialCommitState);
+      setPurgeText("");
+      toast("success", "Appeal granted. Re-run matching to apply it.");
+      return true;
+    } catch (e) {
+      toast("error", errorMessage(e));
+      return false;
+    }
+  };
+
+  const removeAppeal = async (applicantId: number, positionId: number) => {
+    try {
+      const snap = await api.removeAppeal(applicantId, positionId);
+      setSnapshot(snap);
+      setCommitState(initialCommitState);
+      setPurgeText("");
+      toast("success", "Appeal revoked. Re-run matching to apply it.");
+      return true;
+    } catch (e) {
+      toast("error", errorMessage(e));
+      return false;
+    }
+  };
+
   const openDetail = (type: "applicant" | "position", id: number) => {
     setDetail({ type, id });
     setMatch(null);
@@ -176,6 +209,8 @@ function App() {
     toast,
     setCommitState,
     setPurgeText,
+    addAppeal,
+    removeAppeal,
   };
 
   if (!snapshot) {
@@ -217,6 +252,8 @@ function App() {
             <DetailPage ui={ui} handlers={handlers} onBack={() => setDetail(null)} />
           ) : screen === "alloc" ? (
             <Allocations ui={ui} handlers={handlers} />
+          ) : screen === "appeals" ? (
+            <Appeals ui={ui} handlers={handlers} />
           ) : (
             <Review ui={ui} handlers={handlers} />
           )}
@@ -463,6 +500,7 @@ function Sidebar({
 }) {
   const items: { id: Screen; label: string; icon: string }[] = [
     { id: "alloc", label: "Allocations", icon: "layers" },
+    { id: "appeals", label: "Appeals", icon: "tag" },
     { id: "review", label: "Review & commit", icon: "lock" },
   ];
   return (
@@ -569,6 +607,20 @@ function SLine({ k, v, c }: { k: string; v: string; c: string }) {
 }
 
 // ---- Screens (placeholders; Tasks 14-16 replace the rest) ------------------
+function Appeals({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
+  if (!ui.snapshot || !ui.idx) return null;
+  return (
+    <AppealsScreen
+      snapshot={ui.snapshot}
+      idx={ui.idx}
+      onAdd={handlers.addAppeal}
+      onRemove={handlers.removeAppeal}
+      onOpenMatch={handlers.openMatch}
+      toast={handlers.toast}
+    />
+  );
+}
+
 function Allocations({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
   if (!ui.snapshot || !ui.idx) return null;
   return (
