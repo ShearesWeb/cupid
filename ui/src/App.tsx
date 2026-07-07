@@ -8,6 +8,7 @@ import { buildIndexes, type Indexes } from "./lib/indexes.ts";
 import { fmtTime } from "./lib/format.ts";
 import { Icon, Card, Button } from "./components/index.ts";
 import { Toasts, type ToastItem, type ToastKind } from "./components/Toasts.tsx";
+import { Allocations as AllocationsScreen } from "./screens/Allocations.tsx";
 
 type Screen = "alloc" | "review";
 type View = "position" | "applicant";
@@ -57,6 +58,7 @@ export interface UiHandlers {
   setScreen: (s: Screen) => void;
   setView: (v: View) => void;
   setSearch: (v: string) => void;
+  setPage: (p: number) => void;
   toast: (kind: ToastKind, text: string) => void;
 }
 
@@ -182,6 +184,7 @@ function App() {
     setScreen,
     setView,
     setSearch,
+    setPage,
     toast,
   };
 
@@ -575,9 +578,26 @@ function SLine({ k, v, c }: { k: string; v: string; c: string }) {
   );
 }
 
-// ---- Screens (placeholders; Tasks 13-16 replace these) --------------------
-function Allocations(_props: { ui: UiState; handlers: UiHandlers }) {
-  return <div>alloc</div>;
+// ---- Screens (placeholders; Tasks 14-16 replace the rest) ------------------
+function Allocations({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
+  if (!ui.snapshot || !ui.idx) return null;
+  return (
+    <AllocationsScreen
+      snapshot={ui.snapshot}
+      idx={ui.idx}
+      view={ui.view}
+      search={ui.search}
+      page={ui.page}
+      onSetView={handlers.setView}
+      onSetSearch={handlers.setSearch}
+      onSetPage={handlers.setPage}
+      onOpenDetail={handlers.openDetail}
+      onOpenMatch={handlers.openMatch}
+      hasRun={ui.snapshot.run !== null}
+      running={ui.running}
+      onRun={handlers.doRun}
+    />
+  );
 }
 
 function Review(_props: { ui: UiState; handlers: UiHandlers }) {
