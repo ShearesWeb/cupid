@@ -1,6 +1,4 @@
-use std::path::PathBuf;
-
-use cupid::models::{Appeals, Pool};
+use cupid::models::{Appeals, ApplicantIdx, Pool, PositionIdx};
 use cupid::snapshot::Snapshot;
 use tauri::State;
 use tauri_plugin_dialog::DialogExt;
@@ -16,26 +14,17 @@ pub struct ArchiveReceipt {
     pub rows: usize,
 }
 
-fn appeals_dir() -> PathBuf {
-    std::env::var("CUPID_APPEALS_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("data/appeals"))
-}
-
 fn now_rfc3339() -> String {
     OffsetDateTime::now_utc().format(&Rfc3339).expect("rfc3339 format")
 }
 
-/// Reload the corpus from Postgres and appeals from disk.
+/// Reload the corpus and appeals from Postgres.
 /// Invalidates any previous run: the returned snapshot has `run: None`.
 #[tauri::command]
 pub async fn sync(state: State<'_, AppState>) -> Result<Snapshot, String> {
     let (pool, appeals): (Pool, Appeals) =
         tauri::async_runtime::spawn_blocking(|| -> Result<_, String> {
-            let pool = cupid::data::db::load().map_err(|e| e.to_string())?;
-            let appeals = cupid::data::appeals::load_and_resolve(&appeals_dir(), &pool)
-                .map_err(|e| e.to_string())?;
-            Ok((pool, appeals))
+            cupid::data::db::load().map_err(|e| e.to_string())
         })
         .await
         .map_err(|e| e.to_string())??;
@@ -43,6 +32,85 @@ pub async fn sync(state: State<'_, AppState>) -> Result<Snapshot, String> {
     let mut guard = state.inputs.lock().map_err(|e| e.to_string())?;
     *guard = Some(Inputs { pool, appeals, last_result: None, synced_at: now_rfc3339() });
     Ok(snapshot_of(guard.as_ref().expect("just set")))
+}
+
+/// Connect to Postgres with the operator credentials.
+fn connect() -> Result<postgres::Client, String> {
+    let url = std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL must be set")?;
+    let tls = postgres_native_tls::MakeTlsConnector::new(
+        native_tls::TlsConnector::new().map_err(|e| e.to_string())?,
+    );
+    postgres::Client::connect(&url, tls).map_err(|e| e.to_string())
+}
+
+/// Grant a quota-exempt appeal for `(applicant, position)`. Persists to
+/// cca_appeals, updates the in-memory whitelist, and invalidates any run
+/// (its result no longer reflects the appeal set).
+#[tauri::command]
+pub async fn add_appeal(
+    state: State<'_, AppState>,
+    applicant_id: i32,
+    position_id: i32,
+    note: Option<String>,
+) -> Result<Snapshot, String> {
+    {
+        let guard = state.inputs.lock().map_err(|e| e.to_string())?;
+        let inputs = guard.as_ref().ok_or("Sync first: no corpus loaded.")?;
+        inputs.pool.applicant(ApplicantIdx(applicant_id)).ok_or("Unknown applicant.")?;
+        inputs.pool.position(PositionIdx(position_id)).ok_or("Unknown position.")?;
+    }
+    let db_note = note.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let mut client = connect()?;
+        client
+            .execute(
+                "INSERT INTO cca_appeals (user_id, position_id, note) VALUES ($1, $2, $3) \
+                 ON CONFLICT (user_id, position_id) DO UPDATE SET note = EXCLUDED.note",
+                &[&applicant_id, &position_id, &db_note],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    let mut guard = state.inputs.lock().map_err(|e| e.to_string())?;
+    let inputs = guard.as_mut().ok_or("Sync first: no corpus loaded.")?;
+    inputs.appeals.grant_with_note(ApplicantIdx(applicant_id), PositionIdx(position_id), note);
+    inputs.last_result = None;
+    Ok(snapshot_of(inputs))
+}
+
+/// Revoke an appeal. Deletes from cca_appeals, updates the in-memory
+/// whitelist, and invalidates any run.
+#[tauri::command]
+pub async fn remove_appeal(
+    state: State<'_, AppState>,
+    applicant_id: i32,
+    position_id: i32,
+) -> Result<Snapshot, String> {
+    {
+        let guard = state.inputs.lock().map_err(|e| e.to_string())?;
+        guard.as_ref().ok_or("Sync first: no corpus loaded.")?;
+    }
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let mut client = connect()?;
+        client
+            .execute(
+                "DELETE FROM cca_appeals WHERE user_id = $1 AND position_id = $2",
+                &[&applicant_id, &position_id],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    let mut guard = state.inputs.lock().map_err(|e| e.to_string())?;
+    let inputs = guard.as_mut().ok_or("Sync first: no corpus loaded.")?;
+    inputs.appeals.revoke(ApplicantIdx(applicant_id), PositionIdx(position_id));
+    inputs.last_result = None;
+    Ok(snapshot_of(inputs))
 }
 
 /// Run the two-pass matching (IA over BlockComm, then GS over Main/Sub)

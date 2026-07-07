@@ -1,12 +1,10 @@
 use std::collections::{HashMap, HashSet};
-use std::error::Error;
 
-use super::appeals::AppealRecord;
 use super::appointments::AppointmentRecord;
 use super::chair_preferences::ChairPrefRecord;
 use super::user_preferences::UserPrefRecord;
 use crate::models::{
-    Appeals, Applicant, ApplicantIdx, Appointments, Cca, Pool, Position, PositionIdx, PositionType,
+    Applicant, ApplicantIdx, Appointments, Cca, Pool, Position, PositionIdx, PositionType,
 };
 
 /// Build the owned [`Pool`] from the preference tables and existing appointments.
@@ -120,88 +118,6 @@ pub fn derive(
     }
 
     Pool::new(applicants, positions).with_appointments(appointments)
-}
-
-/// Resolve appeal rows against the loaded corpus by name. Pure: no I/O.
-///
-/// Every row is matched to one applicant (by name) and one position (by
-/// CCA name + position name). Unmatched and ambiguous rows are collected and
-/// reported together as a single error so the operator fixes them in one pass.
-pub fn derive_appeals(records: &[AppealRecord], pool: &Pool) -> Result<Appeals, Box<dyn Error>> {
-    let mut by_name: HashMap<String, Vec<ApplicantIdx>> = HashMap::new();
-    for a in pool.applicants() {
-        by_name
-            .entry(a.name.trim().to_string())
-            .or_default()
-            .push(a.id);
-    }
-
-    // (cca name, position name) -> ids.
-    let mut by_position: HashMap<(String, String), Vec<PositionIdx>> = HashMap::new();
-    for p in pool.positions() {
-        by_position
-            .entry((p.cca.name.trim().to_string(), p.name.trim().to_string()))
-            .or_default()
-            .push(p.id);
-    }
-
-    let mut appeals = Appeals::new();
-    let mut problems: Vec<String> = Vec::new();
-
-    for rec in records {
-        let applicant_id = match by_name.get(&rec.applicant_name) {
-            None => {
-                problems.push(format!("unknown applicant '{}'", rec.applicant_name));
-                continue;
-            }
-            Some(ids) if ids.len() > 1 => {
-                problems.push(format!(
-                    "ambiguous applicant '{}' ({} matches)",
-                    rec.applicant_name,
-                    ids.len()
-                ));
-                continue;
-            }
-            Some(ids) => ids[0],
-        };
-
-        let key = (
-            rec.cca_name.trim().to_string(),
-            rec.position_name.trim().to_string(),
-        );
-        let position_id = match by_position.get(&key) {
-            None => {
-                problems.push(format!(
-                    "unknown position '{}' in CCA '{}'",
-                    rec.position_name, rec.cca_name
-                ));
-                continue;
-            }
-            Some(ids) if ids.len() > 1 => {
-                problems.push(format!(
-                    "ambiguous position '{}' in CCA '{}' ({} matches)",
-                    rec.position_name,
-                    rec.cca_name,
-                    ids.len()
-                ));
-                continue;
-            }
-            Some(ids) => ids[0],
-        };
-
-        appeals.grant(applicant_id, position_id);
-    }
-
-    if problems.is_empty() {
-        Ok(appeals)
-    } else {
-        Err(format!(
-            "{} problem(s) resolving appeals:\n{}",
-            problems.len(),
-            problems.join("\n")
-        )
-        .into())
-    }
 }
 
 #[cfg(test)]
@@ -372,72 +288,4 @@ mod tests {
         );
     }
 
-    // ---- appeals resolution (`derive_appeals`) ----
-
-    // Corpus: Ann(1), Ben(2), Ann(3) [duplicate name], Cara(4);
-    // one position "Head" (id 10) in CCA "Chess".
-    fn pool() -> Pool {
-        let applicants = vec![
-            Applicant::new(1, "Ann".into(), "ann@x".into(), vec![]),
-            Applicant::new(2, "Ben".into(), "ben@x".into(), vec![]),
-            Applicant::new(3, "Ann".into(), "ann2@x".into(), vec![]),
-            Applicant::new(4, "Cara".into(), "cara@x".into(), vec![]),
-        ];
-        let positions = vec![Position::new(
-            10,
-            Cca::new(1, "Chess"),
-            "Head".into(),
-            None,
-            1,
-            PositionType::MainComm,
-            vec![ApplicantIdx(4)],
-        )];
-        Pool::new(applicants, positions)
-    }
-
-    fn appeal(applicant: &str, cca: &str, position: &str) -> AppealRecord {
-        AppealRecord {
-            applicant_name: applicant.to_owned(),
-            cca_name: cca.to_owned(),
-            position_name: position.to_owned(),
-        }
-    }
-
-    #[test]
-    fn resolves_valid_row() {
-        let records = vec![appeal("Cara", "Chess", "Head")];
-        let appeals = derive_appeals(&records, &pool()).unwrap();
-        assert!(appeals.contains(ApplicantIdx(4), PositionIdx(10)));
-    }
-
-    #[test]
-    fn unknown_applicant_is_a_problem() {
-        let records = vec![appeal("Zed", "Chess", "Head")];
-        let err = derive_appeals(&records, &pool()).unwrap_err().to_string();
-        assert!(err.contains("unknown applicant 'Zed'"), "got: {err}");
-    }
-
-    #[test]
-    fn ambiguous_applicant_is_a_problem() {
-        let records = vec![appeal("Ann", "Chess", "Head")];
-        let err = derive_appeals(&records, &pool()).unwrap_err().to_string();
-        assert!(err.contains("ambiguous applicant 'Ann'"), "got: {err}");
-    }
-
-    #[test]
-    fn unknown_position_is_a_problem() {
-        let records = vec![appeal("Cara", "Chess", "Ghost")];
-        let err = derive_appeals(&records, &pool()).unwrap_err().to_string();
-        assert!(err.contains("unknown position 'Ghost'"), "got: {err}");
-    }
-
-    #[test]
-    fn problems_aggregate() {
-        let records = vec![
-            appeal("Zed", "Chess", "Head"),
-            appeal("Cara", "Chess", "Ghost"),
-        ];
-        let err = derive_appeals(&records, &pool()).unwrap_err().to_string();
-        assert!(err.contains("2 problem(s)"), "got: {err}");
-    }
 }

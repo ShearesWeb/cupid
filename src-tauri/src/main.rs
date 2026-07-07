@@ -9,6 +9,8 @@ fn main() {
         .manage(state::AppState::default())
         .invoke_handler(tauri::generate_handler![
             commands::sync,
+            commands::add_appeal,
+            commands::remove_appeal,
             commands::run_matching,
             commands::commit,
             commands::archive,

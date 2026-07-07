@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use super::applicant::ApplicantIdx;
 use super::pool::Pool;
@@ -101,10 +101,11 @@ impl CapacityStore {
 }
 
 /// An exempt proposal whitelists a specific `(applicant, position)` so it does not count
-/// toward the applicant's capacity limits.
+/// toward the applicant's capacity limits. Each pair may carry an operator
+/// note explaining why the exemption was granted.
 #[derive(Debug, Default)]
 pub struct Appeals {
-    whitelist: HashSet<(ApplicantIdx, PositionIdx)>,
+    whitelist: HashMap<(ApplicantIdx, PositionIdx), Option<String>>,
 }
 
 impl Appeals {
@@ -114,17 +115,39 @@ impl Appeals {
 
     /// Whitelist the `(applicant, position)` proposal as quota-exempt.
     pub fn grant(&mut self, applicant: ApplicantIdx, position: PositionIdx) {
-        self.whitelist.insert((applicant, position));
+        self.whitelist.insert((applicant, position), None);
+    }
+
+    /// Whitelist with an operator note. Re-granting replaces the note.
+    pub fn grant_with_note(
+        &mut self,
+        applicant: ApplicantIdx,
+        position: PositionIdx,
+        note: Option<String>,
+    ) {
+        self.whitelist.insert((applicant, position), note);
+    }
+
+    /// Remove the exemption. A missing pair is a no-op.
+    pub fn revoke(&mut self, applicant: ApplicantIdx, position: PositionIdx) {
+        self.whitelist.remove(&(applicant, position));
     }
 
     /// Is this exact `(applicant, position)` proposal exempt from quota?
     pub fn contains(&self, applicant: ApplicantIdx, position: PositionIdx) -> bool {
-        self.whitelist.contains(&(applicant, position))
+        self.whitelist.contains_key(&(applicant, position))
+    }
+
+    /// The operator note attached to an exempt pair, if any.
+    pub fn note(&self, applicant: ApplicantIdx, position: PositionIdx) -> Option<&str> {
+        self.whitelist
+            .get(&(applicant, position))
+            .and_then(|n| n.as_deref())
     }
 
     /// Every exempt pair, in no particular order.
     pub fn iter(&self) -> impl Iterator<Item = (ApplicantIdx, PositionIdx)> + '_ {
-        self.whitelist.iter().copied()
+        self.whitelist.keys().copied()
     }
 }
 
@@ -292,5 +315,29 @@ mod tests {
         appeals.grant(ApplicantIdx(1), PositionIdx(10));
         let pairs: Vec<_> = appeals.iter().collect();
         assert_eq!(pairs, vec![(ApplicantIdx(1), PositionIdx(10))]);
+    }
+
+    #[test]
+    fn appeals_revoke_removes_only_that_pair() {
+        let mut appeals = Appeals::new();
+        appeals.grant(ApplicantIdx(1), PositionIdx(10));
+        appeals.grant(ApplicantIdx(2), PositionIdx(10));
+        appeals.revoke(ApplicantIdx(1), PositionIdx(10));
+        assert!(!appeals.contains(ApplicantIdx(1), PositionIdx(10)));
+        assert!(appeals.contains(ApplicantIdx(2), PositionIdx(10)));
+        // Revoking a missing pair is a no-op.
+        appeals.revoke(ApplicantIdx(9), PositionIdx(9));
+    }
+
+    #[test]
+    fn appeals_note_round_trips_and_regrant_replaces() {
+        let mut appeals = Appeals::new();
+        appeals.grant_with_note(ApplicantIdx(1), PositionIdx(10), Some("chair request".into()));
+        assert_eq!(appeals.note(ApplicantIdx(1), PositionIdx(10)), Some("chair request"));
+        // Plain grant has no note; regranting the same pair replaces it.
+        appeals.grant(ApplicantIdx(1), PositionIdx(10));
+        assert_eq!(appeals.note(ApplicantIdx(1), PositionIdx(10)), None);
+        // Unknown pair has no note.
+        assert_eq!(appeals.note(ApplicantIdx(2), PositionIdx(10)), None);
     }
 }

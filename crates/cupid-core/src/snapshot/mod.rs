@@ -29,7 +29,7 @@ pub struct Snapshot {
     pub positions: Vec<PositionView>,
     pub applicants: Vec<ApplicantView>,
     pub committed: Vec<PairView>,
-    pub appeals: Vec<PairView>,
+    pub appeals: Vec<AppealView>,
     pub quota: Vec<QuotaView>,
     pub seats: Vec<SeatsView>,
     pub outcomes: Vec<OutcomeView>,
@@ -68,6 +68,14 @@ pub struct ApplicantView {
 pub struct PairView {
     pub applicant_id: i32,
     pub position_id: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppealView {
+    pub applicant_id: i32,
+    pub position_id: i32,
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -179,7 +187,7 @@ pub fn build(
         positions: build_positions(pool),
         applicants: build_applicants(pool),
         committed: build_pairs(pool.appointments().iter().map(|a| (a.applicant, a.position))),
-        appeals: build_pairs(appeals.iter()),
+        appeals: build_appeals(appeals),
         quota: build_quota(pool, appeals, result),
         seats: build_seats(pool, appeals, result),
         outcomes: build_outcomes(pool, appeals, result),
@@ -226,6 +234,19 @@ fn build_applicants(pool: &Pool) -> Vec<ApplicantView> {
         })
         .collect();
     views.sort_by_key(|v| v.id);
+    views
+}
+
+fn build_appeals(appeals: &Appeals) -> Vec<AppealView> {
+    let mut views: Vec<AppealView> = appeals
+        .iter()
+        .map(|(a, p)| AppealView {
+            applicant_id: a.0,
+            position_id: p.0,
+            note: appeals.note(a, p).map(str::to_owned),
+        })
+        .collect();
+    views.sort_by_key(|v| (v.applicant_id, v.position_id));
     views
 }
 
