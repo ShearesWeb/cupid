@@ -5,5 +5,16 @@ body { font-family: var(--token-typography-font-stack-display); background: var(
 ::-webkit-scrollbar { width: 11px; height: 11px; }
 ::-webkit-scrollbar-thumb { background: var(--token-color-border-strong); border-radius: 8px; border: 3px solid transparent; background-clip: padding-box; }
 ::-webkit-scrollbar-track { background: transparent; }
+/* Icon tinting. The mask lives in a class because -webkit-mask-image and
+   mask-image are CSSOM aliases of one property: React inline styles carrying
+   both camelCase keys end up clearing the pair. A stylesheet rule sidesteps
+   the alias entirely; the component only supplies --icon-url and colors. */
+.cca-icon {
+  display: inline-block;
+  flex-shrink: 0;
+  background-color: currentColor;
+  -webkit-mask: var(--icon-url) no-repeat center / contain;
+  mask: var(--icon-url) no-repeat center / contain;
+}
 @keyframes cca-spin { to { transform: rotate(360deg); } }
 @keyframes cca-pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
