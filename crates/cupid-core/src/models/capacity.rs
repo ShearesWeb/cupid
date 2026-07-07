@@ -39,19 +39,18 @@ impl HeldCounts {
             PositionType::SubComm => self.subcomm = self.subcomm.saturating_sub(1),
         }
     }
+    /// Are the current holdings legal under the quota rule?
+    pub fn within_quota(&self) -> bool {
+        self.maincomm + self.blockcomm <= 2
+            && self.subcomm <= 3
+            && !(self.maincomm >= 1 && self.subcomm >= 2)
+    }
+
     /// Would adding one position of `ty` to the current holdings exceed quota?
     pub fn can_add(&self, ty: PositionType) -> bool {
-        let mut blockcomm = self.blockcomm;
-        let mut maincomm = self.maincomm;
-        let mut subcomm = self.subcomm;
-
-        match ty {
-            PositionType::BlockComm => blockcomm += 1,
-            PositionType::MainComm => maincomm += 1,
-            PositionType::SubComm => subcomm += 1,
-        }
-
-        maincomm + blockcomm <= 2 && subcomm <= 3 && !(maincomm >= 1 && subcomm >= 2)
+        let mut next = *self;
+        next.add(ty, false);
+        next.within_quota()
     }
 }
 
@@ -121,6 +120,11 @@ impl Appeals {
     /// Is this exact `(applicant, position)` proposal exempt from quota?
     pub fn contains(&self, applicant: ApplicantIdx, position: PositionIdx) -> bool {
         self.whitelist.contains(&(applicant, position))
+    }
+
+    /// Every exempt pair, in no particular order.
+    pub fn iter(&self) -> impl Iterator<Item = (ApplicantIdx, PositionIdx)> + '_ {
+        self.whitelist.iter().copied()
     }
 }
 
@@ -270,5 +274,23 @@ mod tests {
         assert!(!appeals.contains(ApplicantIdx(1), PositionIdx(11)));
         // Different applicant, same position: not exempt.
         assert!(!appeals.contains(ApplicantIdx(2), PositionIdx(10)));
+    }
+
+    #[test]
+    fn within_quota_matches_rule() {
+        assert!(held(1, 1, 0).within_quota());
+        assert!(held(1, 1, 1).within_quota(), "2 main/block + 1 sub is legal");
+        assert!(held(0, 0, 3).within_quota());
+        assert!(!held(2, 1, 0).within_quota(), "3 main/block");
+        assert!(!held(0, 1, 2).within_quota(), "cross rule");
+        assert!(!held(0, 0, 4).within_quota(), "4 sub");
+    }
+
+    #[test]
+    fn appeals_iterates_pairs() {
+        let mut appeals = Appeals::new();
+        appeals.grant(ApplicantIdx(1), PositionIdx(10));
+        let pairs: Vec<_> = appeals.iter().collect();
+        assert_eq!(pairs, vec![(ApplicantIdx(1), PositionIdx(10))]);
     }
 }

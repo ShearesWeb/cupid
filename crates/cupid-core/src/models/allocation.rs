@@ -117,6 +117,11 @@ impl MatchResult {
             .flatten()
     }
 
+    /// Every recorded event across all pairs, in no particular order.
+    pub fn events(&self) -> impl Iterator<Item = &Event> {
+        self.events.values().flatten()
+    }
+
     /// Applicant ids that ended holding no positions.
     pub fn unmatched<'a>(
         &self,
@@ -232,5 +237,14 @@ mod tests {
         assert_eq!(result.for_position(PositionIdx(1)), &[]);
         assert!(result.positions_of(ApplicantIdx(1)).is_empty());
         assert_eq!(result.all().count(), 0);
+    }
+
+    #[test]
+    fn events_iterates_every_event() {
+        let mut ledger = Ledger::new(Algorithm::GaleShapley);
+        ledger.reject(ApplicantIdx(2), PositionIdx(10), RejectReason::RoleCapacityFull);
+        ledger.reject(ApplicantIdx(3), PositionIdx(10), RejectReason::NotRankedByChair);
+        let result = ledger.finish();
+        assert_eq!(result.events().count(), 2);
     }
 }
