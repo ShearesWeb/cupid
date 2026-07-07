@@ -1,6 +1,8 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; height: 100%; }
-html { background: var(--token-color-page-faint); }
+/* page-faint is translucent in dark mode (#06060708), so it must composite
+   over the solid page-primary base, never over the UA's white default. */
+html { background: var(--token-color-page-primary); }
 body { font-family: var(--token-typography-font-stack-display); background: var(--token-color-page-faint); -webkit-font-smoothing: antialiased; }
 ::-webkit-scrollbar { width: 11px; height: 11px; }
 ::-webkit-scrollbar-thumb { background: var(--token-color-border-strong); border-radius: 8px; border: 3px solid transparent; background-clip: padding-box; }
