@@ -26,6 +26,6 @@ mod tests {
     fn db_load_against_live_database() {
         let pool = load().expect("load from DATABASE_URL");
         // Smoke check: a real run should produce a corpus we can match over.
-        assert!(!pool.positions().is_empty(), "expected some positions");
+        assert!(pool.positions().count() > 0, "expected some positions");
     }
 }

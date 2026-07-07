@@ -7,9 +7,6 @@ use super::applicant::ApplicantIdx;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PositionIdx(pub i32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CCAIdx(pub i32);
-
 /// CCA Positions
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 // Variants share the "Comm" suffix by design: block / main / sub committee.
@@ -49,7 +46,7 @@ impl FromStr for PositionType {
 pub struct Position {
     /// External database id, retained for output and audit display.
     pub id: PositionIdx,
-    pub cca_id: CCAIdx,
+    pub cca_name: String,
     pub name: String,
     pub description: Option<String>,
     pub capacity: usize,
@@ -61,14 +58,15 @@ pub struct Position {
     /// Inverse `ranking` for O(1) lookup: applicant -> 1-based rank.
     inverse_rank: HashMap<ApplicantIdx, usize>,
 
-    /// Existing holders of this position.
-    appointments: Vec<ApplicantIdx>,
+    /// Seats open to the matcher = capacity minus appointed holders. Computed
+    /// once at corpus assembly; the appointee identities live in `Appointments`.
+    vacancies: usize,
 }
 
 impl Position {
     pub fn new(
         id: i32,
-        cca_id: i32,
+        cca_name: String,
         name: String,
         description: Option<String>,
         capacity: usize,
@@ -83,14 +81,14 @@ impl Position {
             .collect();
         Position {
             id: PositionIdx(id),
-            cca_id: CCAIdx(cca_id),
+            cca_name,
             name,
             description,
             capacity,
             position_type,
             ranking,
             inverse_rank,
-            appointments: Vec::new(),
+            vacancies: capacity,
         }
     }
 
@@ -108,19 +106,16 @@ impl Position {
         self.position_type.algorithm()
     }
 
-    /// Existing holders of this position.
-    pub fn appointments(&self) -> &[ApplicantIdx] {
-        &self.appointments
-    }
-
-    /// Seats open to the matcher = real capacity minus existing holders.
+    /// Seats open to the matcher = real capacity minus appointed holders.
     pub fn vacancies(&self) -> usize {
-        self.capacity.saturating_sub(self.appointments.len())
+        self.vacancies
     }
 
-    /// Builder: attach existing holders (set once during corpus assembly).
-    pub fn with_appointments(mut self, appointments: Vec<ApplicantIdx>) -> Self {
-        self.appointments = appointments;
+    /// Builder: record how many seats are already taken by appointment, shrinking
+    /// the vacancies open to the matcher. Set once during corpus assembly; the
+    /// holder identities are kept separately in [`Appointments`](super::Appointments).
+    pub fn with_appointed(mut self, appointed: usize) -> Self {
+        self.vacancies = self.capacity.saturating_sub(appointed);
         self
     }
 }
@@ -131,16 +126,28 @@ mod tests {
 
     #[test]
     fn type_routes_to_algorithm() {
-        assert_eq!(PositionType::BlockComm.algorithm(), Algorithm::ImmediateAcceptance);
+        assert_eq!(
+            PositionType::BlockComm.algorithm(),
+            Algorithm::ImmediateAcceptance
+        );
         assert_eq!(PositionType::MainComm.algorithm(), Algorithm::GaleShapley);
         assert_eq!(PositionType::SubComm.algorithm(), Algorithm::GaleShapley);
     }
 
     #[test]
     fn parse_is_case_insensitive_and_trimmed() {
-        assert_eq!("blockcomm".parse::<PositionType>().unwrap(), PositionType::BlockComm);
-        assert_eq!("  MainComm ".parse::<PositionType>().unwrap(), PositionType::MainComm);
-        assert_eq!("SUBCOMM".parse::<PositionType>().unwrap(), PositionType::SubComm);
+        assert_eq!(
+            "blockcomm".parse::<PositionType>().unwrap(),
+            PositionType::BlockComm
+        );
+        assert_eq!(
+            "  MainComm ".parse::<PositionType>().unwrap(),
+            PositionType::MainComm
+        );
+        assert_eq!(
+            "SUBCOMM".parse::<PositionType>().unwrap(),
+            PositionType::SubComm
+        );
     }
 
     #[test]
@@ -150,17 +157,32 @@ mod tests {
     }
 
     #[test]
-    fn vacancies_is_capacity_minus_appointments() {
-        let p = Position::new(10, 1, "P".into(), None, 3, PositionType::MainComm, vec![]);
+    fn vacancies_is_capacity_minus_appointed() {
+        let p = Position::new(
+            10,
+            "C".into(),
+            "P".into(),
+            None,
+            3,
+            PositionType::MainComm,
+            vec![],
+        );
         assert_eq!(p.vacancies(), 3, "no appointments -> full capacity");
 
-        let p = p.with_appointments(vec![ApplicantIdx(1), ApplicantIdx(2)]);
-        assert_eq!(p.appointments(), &[ApplicantIdx(1), ApplicantIdx(2)]);
+        let p = p.with_appointed(2);
         assert_eq!(p.vacancies(), 1, "2 of 3 seats already held");
 
         // More appointees than capacity saturates to 0, never underflows.
-        let full = Position::new(11, 1, "Q".into(), None, 1, PositionType::MainComm, vec![])
-            .with_appointments(vec![ApplicantIdx(1), ApplicantIdx(2)]);
+        let full = Position::new(
+            11,
+            "C".into(),
+            "Q".into(),
+            None,
+            1,
+            PositionType::MainComm,
+            vec![],
+        )
+        .with_appointed(2);
         assert_eq!(full.vacancies(), 0);
     }
 
@@ -169,7 +191,7 @@ mod tests {
         // Chair ranks applicants 7, 3, 9 (best first).
         let p = Position::new(
             100,
-            1,
+            "C".into(),
             "Pos".into(),
             None,
             2,
@@ -182,6 +204,9 @@ mod tests {
         // An applicant the chair never listed has no rank.
         assert_eq!(p.rank_of(ApplicantIdx(42)), None);
         // The public ranking slice preserves chair order.
-        assert_eq!(p.ranking(), &[ApplicantIdx(7), ApplicantIdx(3), ApplicantIdx(9)]);
+        assert_eq!(
+            p.ranking(),
+            &[ApplicantIdx(7), ApplicantIdx(3), ApplicantIdx(9)]
+        );
     }
 }

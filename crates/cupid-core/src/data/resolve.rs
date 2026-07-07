@@ -6,25 +6,24 @@ use super::appointments::AppointmentRecord;
 use super::chair_preferences::ChairPrefRecord;
 use super::user_preferences::UserPrefRecord;
 use crate::models::{
-    Appeals, Applicant, ApplicantIdx, CCAIdx, Pool, Position, PositionIdx, PositionType,
+    Appeals, Applicant, ApplicantIdx, Appointments, Pool, Position, PositionIdx, PositionType,
 };
 
 /// Build the owned [`Pool`] from the preference tables and existing appointments.
 pub fn derive(
     user_prefs: &[UserPrefRecord],
     chair_prefs: &[ChairPrefRecord],
-    appointments: &[AppointmentRecord],
+    appointment_records: &[AppointmentRecord],
 ) -> Pool {
     // --- Positions (+ chair rankings) from the chair-preference side ---
     struct PosAcc {
-        cca_id: i32,
+        cca_name: String,
         name: String,
         capacity: usize,
         position_type: PositionType,
         ranked: Vec<(i32, i32)>, // (user_id, rank)
     }
     let mut pos_acc: HashMap<i32, PosAcc> = HashMap::new();
-    let mut ccas: HashMap<CCAIdx, String> = HashMap::new();
     for r in chair_prefs {
         let Ok(position_type) = r.position_type.parse::<PositionType>() else {
             continue;
@@ -32,10 +31,8 @@ pub fn derive(
         let Some(capacity) = r.capacity else {
             continue;
         };
-        ccas.entry(CCAIdx(r.cca_id))
-            .or_insert_with(|| r.cca_name.clone());
         let acc = pos_acc.entry(r.position_id).or_insert_with(|| PosAcc {
-            cca_id: r.cca_id,
+            cca_name: r.cca_name.clone(),
             name: r.position_name.clone(),
             capacity: capacity.max(0) as usize,
             position_type,
@@ -66,15 +63,14 @@ pub fn derive(
     }
 
     // --- Existing appointments (over kept positions only) ---
-    // Two-sided adjacency: position -> holders, holder -> positions.
-    let mut appt_by_position: HashMap<i32, Vec<i32>> = HashMap::new();
-    let mut appt_by_user: HashMap<i32, Vec<i32>> = HashMap::new();
-    for a in appointments {
+    // The bidirectional relation lives in one place; positions and applicants
+    // derive their counts/filters from it rather than each holding a copy.
+    let mut appointments = Appointments::new();
+    for a in appointment_records {
         if !kept.contains(&a.position_id) {
             continue; // appointment to a dropped position has no seat to occupy
         }
-        appt_by_position.entry(a.position_id).or_default().push(a.user_id);
-        appt_by_user.entry(a.user_id).or_default().push(a.position_id);
+        appointments.insert(ApplicantIdx(a.user_id), PositionIdx(a.position_id));
         // A holder who did not apply becomes an Applicant with empty preferences.
         app_acc.entry(a.user_id).or_insert_with(|| AppAcc {
             name: a.user_name.clone(),
@@ -83,38 +79,34 @@ pub fn derive(
         });
     }
 
-    // --- Build positions, attaching their appointees ---
+    // --- Build positions, shrinking vacancies by their appointee count ---
     let mut positions: Vec<Position> = Vec::new();
     for (position_id, mut acc) in pos_acc {
         acc.ranked.sort_by_key(|&(_, rank)| rank);
-        let ranking: Vec<ApplicantIdx> =
-            acc.ranked.iter().map(|&(uid, _)| ApplicantIdx(uid)).collect();
-        let appointees: Vec<ApplicantIdx> = appt_by_position
-            .get(&position_id)
-            .map(|ids| ids.iter().map(|&uid| ApplicantIdx(uid)).collect())
-            .unwrap_or_default();
+        let ranking: Vec<ApplicantIdx> = acc
+            .ranked
+            .iter()
+            .map(|&(uid, _)| ApplicantIdx(uid))
+            .collect();
         positions.push(
             Position::new(
                 position_id,
-                acc.cca_id,
+                acc.cca_name,
                 acc.name,
                 None,
                 acc.capacity,
                 acc.position_type,
                 ranking,
             )
-            .with_appointments(appointees),
+            .with_appointed(appointments.count_at(PositionIdx(position_id))),
         );
     }
 
-    // --- Build applicants, attaching their appointments ---
+    // --- Build applicants, dropping any preference already held by appointment ---
     let mut applicants: Vec<Applicant> = Vec::new();
     for (user_id, mut acc) in app_acc {
         acc.prefs.sort_by_key(|&(_, rank)| rank);
-        let held: Vec<PositionIdx> = appt_by_user
-            .get(&user_id)
-            .map(|ids| ids.iter().map(|&pid| PositionIdx(pid)).collect())
-            .unwrap_or_default();
+        let held = appointments.held_by(ApplicantIdx(user_id));
         // A position already held by appointment must not be matched again.
         let preferences: Vec<PositionIdx> = acc
             .prefs
@@ -122,23 +114,18 @@ pub fn derive(
             .map(|&(pid, _)| PositionIdx(pid))
             .filter(|pid| !held.contains(pid))
             .collect();
-        applicants.push(
-            Applicant::new(user_id, acc.name, acc.email, preferences).with_appointments(held),
-        );
+        applicants.push(Applicant::new(user_id, acc.name, acc.email, preferences));
     }
 
-    Pool::new(applicants, positions, ccas)
+    Pool::new(applicants, positions).with_appointments(appointments)
 }
 
 /// Resolve appeal rows against the loaded corpus by name. Pure: no I/O.
 ///
-/// Every row is matched to one applicant (by name) and one position (by CCA +
-/// position name). Unmatched and ambiguous rows are collected and reported
-/// together as a single error so the operator fixes them in one pass.
-pub fn derive_appeals(
-    records: &[AppealRecord],
-    pool: &Pool,
-) -> Result<Appeals, Box<dyn Error>> {
+/// Every row is matched to one applicant (by name) and one position (by
+/// CCA name + position name). Unmatched and ambiguous rows are collected and
+/// reported together as a single error so the operator fixes them in one pass.
+pub fn derive_appeals(records: &[AppealRecord], pool: &Pool) -> Result<Appeals, Box<dyn Error>> {
     let mut by_name: HashMap<String, Vec<ApplicantIdx>> = HashMap::new();
     for a in pool.applicants() {
         by_name
@@ -147,11 +134,13 @@ pub fn derive_appeals(
             .push(a.id);
     }
 
-    let mut by_cca_pos: HashMap<(String, String), PositionIdx> = HashMap::new();
+    // (cca name, position name) -> ids.
+    let mut by_position: HashMap<(String, String), Vec<PositionIdx>> = HashMap::new();
     for p in pool.positions() {
-        if let Some(cca) = pool.cca_name(p.cca_id) {
-            by_cca_pos.insert((cca.trim().to_string(), p.name.trim().to_string()), p.id);
-        }
+        by_position
+            .entry((p.cca_name.trim().to_string(), p.name.trim().to_string()))
+            .or_default()
+            .push(p.id);
     }
 
     let mut appeals = Appeals::new();
@@ -174,8 +163,11 @@ pub fn derive_appeals(
             Some(ids) => ids[0],
         };
 
-        let key = (rec.cca_name.clone(), rec.position_name.clone());
-        let position_id = match by_cca_pos.get(&key) {
+        let key = (
+            rec.cca_name.trim().to_string(),
+            rec.position_name.trim().to_string(),
+        );
+        let position_id = match by_position.get(&key) {
             None => {
                 problems.push(format!(
                     "unknown position '{}' in CCA '{}'",
@@ -183,7 +175,16 @@ pub fn derive_appeals(
                 ));
                 continue;
             }
-            Some(id) => *id,
+            Some(ids) if ids.len() > 1 => {
+                problems.push(format!(
+                    "ambiguous position '{}' in CCA '{}' ({} matches)",
+                    rec.position_name,
+                    rec.cca_name,
+                    ids.len()
+                ));
+                continue;
+            }
+            Some(ids) => ids[0],
         };
 
         appeals.grant(applicant_id, position_id);
@@ -232,7 +233,6 @@ mod tests {
             position_name: format!("P{position_id}"),
             position_type: position_type.to_string(),
             capacity,
-            cca_id,
             cca_name: format!("C{cca_id}"),
         }
     }
@@ -246,14 +246,10 @@ mod tests {
         ];
         let pool = derive(&user_prefs, &chair_prefs, &[]);
 
-        assert_eq!(pool.positions().len(), 1);
-        assert_eq!(pool.positions()[0].id, PositionIdx(10));
+        assert_eq!(pool.positions().count(), 1);
+        assert_eq!(pool.position(PositionIdx(10)).unwrap().id, PositionIdx(10));
         // Applicant 2 only ranked the dropped position -> kept, but with no prefs.
-        let u2 = pool
-            .applicants()
-            .iter()
-            .find(|a| a.id == ApplicantIdx(2))
-            .unwrap();
+        let u2 = pool.applicants().find(|a| a.id == ApplicantIdx(2)).unwrap();
         assert!(u2.preferences().is_empty());
     }
 
@@ -263,10 +259,10 @@ mod tests {
         let chair_prefs = vec![cpref(10, 1, 1, "subcomm", None, 5)]; // NULL capacity
         let pool = derive(&user_prefs, &chair_prefs, &[]);
 
-        assert!(pool.positions().is_empty());
+        assert_eq!(pool.positions().count(), 0);
         // Applicant survives but the pref to the skipped position is dropped.
-        assert_eq!(pool.applicants().len(), 1);
-        assert!(pool.applicants()[0].preferences().is_empty());
+        assert_eq!(pool.applicants().count(), 1);
+        assert!(pool.applicants().next().unwrap().preferences().is_empty());
     }
 
     #[test]
@@ -278,7 +274,7 @@ mod tests {
         let pool = derive(&[], &chair_prefs, &[]);
 
         assert_eq!(
-            pool.positions()[0].ranking(),
+            pool.position(PositionIdx(10)).unwrap().ranking(),
             &[ApplicantIdx(3), ApplicantIdx(1)]
         );
     }
@@ -297,22 +293,8 @@ mod tests {
         ];
         let pool = derive(&user_prefs, &chair_prefs, &[]);
 
-        let ann = pool
-            .applicants()
-            .iter()
-            .find(|a| a.id == ApplicantIdx(1))
-            .unwrap();
+        let ann = pool.applicants().find(|a| a.id == ApplicantIdx(1)).unwrap();
         assert_eq!(ann.preferences(), &[PositionIdx(20), PositionIdx(10)]);
-    }
-
-    #[test]
-    fn collects_cca_names() {
-        let pool = derive(
-            &[upref(1, 10, 1)],
-            &[cpref(10, 1, 1, "maincomm", Some(1), 7)],
-            &[],
-        );
-        assert_eq!(pool.cca_name(CCAIdx(7)), Some("C7"));
     }
 
     fn apptrec(user_id: i32, position_id: i32) -> AppointmentRecord {
@@ -334,16 +316,18 @@ mod tests {
 
         let pool = derive(&user_prefs, &chair_prefs, &appts);
 
-        // Position carries the appointee; one seat already gone.
+        // The appointment shrinks the position's vacancies; one seat already gone.
         let p = pool.position(PositionIdx(10)).unwrap();
-        assert_eq!(p.appointments(), &[ApplicantIdx(2)]);
+        assert_eq!(pool.appointments().holders(PositionIdx(10)), &[ApplicantIdx(2)]);
         assert_eq!(p.vacancies(), 1, "cap 2 minus 1 appointee");
 
         // The non-applicant holder is now an Applicant with empty preferences,
-        // carrying the appointment on their side.
-        let holder = pool.applicant(ApplicantIdx(2)).expect("stub applicant added");
+        // and the relation records the appointment on their side too.
+        let holder = pool
+            .applicant(ApplicantIdx(2))
+            .expect("stub applicant added");
         assert!(holder.preferences.is_empty());
-        assert_eq!(holder.appointments(), &[PositionIdx(10)]);
+        assert_eq!(pool.appointments().held_by(ApplicantIdx(2)), &[PositionIdx(10)]);
     }
 
     #[test]
@@ -354,8 +338,11 @@ mod tests {
 
         let pool = derive(&[], &chair_prefs, &appts);
 
-        assert!(pool.positions().is_empty(), "member position dropped");
-        assert!(pool.applicant(ApplicantIdx(2)).is_none(), "holder of a dropped position not added");
+        assert_eq!(pool.positions().count(), 0, "member position dropped");
+        assert!(
+            pool.applicant(ApplicantIdx(2)).is_none(),
+            "holder of a dropped position not added"
+        );
     }
 
     #[test]
@@ -366,14 +353,17 @@ mod tests {
 
         let pool = derive(&user_prefs, &chair_prefs, &appts);
         let a = pool.applicant(ApplicantIdx(1)).unwrap();
-        assert!(a.preferences().is_empty(), "held position filtered out of prefs");
-        assert_eq!(a.appointments(), &[PositionIdx(10)]);
+        assert!(
+            a.preferences().is_empty(),
+            "held position filtered out of prefs"
+        );
+        assert_eq!(pool.appointments().held_by(ApplicantIdx(1)), &[PositionIdx(10)]);
     }
 
     // ---- appeals resolution (`derive_appeals`) ----
 
     // Corpus: Ann(1), Ben(2), Ann(3) [duplicate name], Cara(4);
-    // one position "Head" (id 10) under CCA "Chess" (id 1).
+    // one position "Head" (id 10) in CCA "Chess".
     fn pool() -> Pool {
         let applicants = vec![
             Applicant::new(1, "Ann".into(), "ann@x".into(), vec![]),
@@ -383,16 +373,14 @@ mod tests {
         ];
         let positions = vec![Position::new(
             10,
-            1,
+            "Chess".into(),
             "Head".into(),
             None,
             1,
             PositionType::MainComm,
             vec![ApplicantIdx(4)],
         )];
-        let mut ccas = HashMap::new();
-        ccas.insert(CCAIdx(1), "Chess".to_string());
-        Pool::new(applicants, positions, ccas)
+        Pool::new(applicants, positions)
     }
 
     fn appeal(applicant: &str, cca: &str, position: &str) -> AppealRecord {

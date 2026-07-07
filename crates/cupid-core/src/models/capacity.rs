@@ -89,14 +89,12 @@ impl CapacityStore {
         }
     }
 
-    /// Seed every holder's tally from existing appointments. Walks the position
-    /// side so each appointment's type is the position's own type — no lookup.
-    /// Non-applicant holders are tallied too; their tally is never queried.
+    /// Seed every holder's tally from existing appointments.
     pub fn from_pool(pool: &Pool) -> Self {
         let mut store = CapacityStore::new();
-        for position in pool.positions() {
-            for &aid in position.appointments() {
-                store.grant(aid, position.position_type, false);
+        for appointment in pool.appointments().iter() {
+            if let Some(position) = pool.position(appointment.position) {
+                store.grant(appointment.applicant, position.position_type, false);
             }
         }
         store
@@ -185,7 +183,10 @@ mod tests {
         store.grant(a, MainComm, false);
         store.grant(a, SubComm, false);
         let counts = store.get(a);
-        assert_eq!((counts.blockcomm, counts.maincomm, counts.subcomm), (1, 1, 1));
+        assert_eq!(
+            (counts.blockcomm, counts.maincomm, counts.subcomm),
+            (1, 1, 1)
+        );
     }
 
     #[test]
@@ -231,17 +232,24 @@ mod tests {
 
     #[test]
     fn from_pool_seeds_quota_from_appointments() {
-        use crate::models::{Applicant, Pool, Position};
-        use std::collections::HashMap;
+        use crate::models::{Applicant, Appointment, Appointments, Pool, Position, PositionIdx};
 
         let applicants = vec![Applicant::new(1, "Ann".into(), "a@x".into(), vec![])];
         let positions = vec![
-            Position::new(10, 1, "M".into(), None, 2, MainComm, vec![])
-                .with_appointments(vec![ApplicantIdx(1)]),
-            Position::new(20, 1, "S".into(), None, 2, SubComm, vec![])
-                .with_appointments(vec![ApplicantIdx(1)]),
+            Position::new(10, "C".into(), "M".into(), None, 2, MainComm, vec![]).with_appointed(1),
+            Position::new(20, "C".into(), "S".into(), None, 2, SubComm, vec![]).with_appointed(1),
         ];
-        let pool = Pool::new(applicants, positions, HashMap::new());
+        let appointments = Appointments::from_iter([
+            Appointment {
+                applicant: ApplicantIdx(1),
+                position: PositionIdx(10),
+            },
+            Appointment {
+                applicant: ApplicantIdx(1),
+                position: PositionIdx(20),
+            },
+        ]);
+        let pool = Pool::new(applicants, positions).with_appointments(appointments);
 
         let store = CapacityStore::from_pool(&pool);
         let counts = store.get(ApplicantIdx(1));

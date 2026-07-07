@@ -157,7 +157,7 @@ mod tests {
     fn position(id: i32, cap: usize, ranking: &[i32]) -> Position {
         Position::new(
             id,
-            1,
+            "C".into(),
             format!("P{id}"),
             None,
             cap,

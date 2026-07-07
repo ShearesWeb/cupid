@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use cupid::{algorithm, data, models::Pool, report};
+use cupid::{algorithm, data, models::Pool};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Single source of truth: the production Postgres view. Requires DATABASE_URL.
@@ -11,6 +11,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let appeals = data::appeals::load_and_resolve(Path::new("data/appeals"), &pool)?;
 
     let result = algorithm::run(&pool, &appeals);
-    report::print(&result, &pool);
     Ok(())
 }

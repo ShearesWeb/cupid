@@ -118,18 +118,22 @@ impl MatchResult {
     }
 
     /// Applicant ids that ended holding no positions.
-    pub fn unmatched(&self, applicants: &[Applicant]) -> Vec<ApplicantIdx> {
+    pub fn unmatched<'a>(
+        &self,
+        applicants: impl Iterator<Item = &'a Applicant>,
+    ) -> Vec<ApplicantIdx> {
         applicants
-            .iter()
             .map(|a| a.id)
             .filter(|&id| self.for_applicant(id).next().is_none())
             .collect()
     }
 
     /// Position id -> empty capacity remaining.
-    pub fn unfilled(&self, positions: &[Position]) -> Vec<(PositionIdx, usize)> {
+    pub fn unfilled<'a>(
+        &self,
+        positions: impl Iterator<Item = &'a Position>,
+    ) -> Vec<(PositionIdx, usize)> {
         positions
-            .iter()
             .filter_map(|p| {
                 let filled = self.for_position(p.id).len();
                 let empty = p.vacancies().saturating_sub(filled);
@@ -156,7 +160,7 @@ mod tests {
     fn position(id: i32, cap: usize, ranking: &[i32]) -> Position {
         Position::new(
             id,
-            1,
+            "C".into(),
             format!("P{id}"),
             None,
             cap,
@@ -197,24 +201,24 @@ mod tests {
     #[test]
     fn unmatched_lists_applicants_with_no_seat() {
         let (applicants, _, result) = sample();
-        assert_eq!(result.unmatched(&applicants), vec![ApplicantIdx(2)]);
+        assert_eq!(result.unmatched(applicants.iter()), vec![ApplicantIdx(2)]);
     }
 
     #[test]
     fn unfilled_reports_only_positions_with_room() {
         let (_, positions, result) = sample();
         // M (cap 1) is full and omitted; S (cap 2) has one empty seat.
-        assert_eq!(result.unfilled(&positions), vec![(PositionIdx(20), 1)]);
+        assert_eq!(result.unfilled(positions.iter()), vec![(PositionIdx(20), 1)]);
     }
 
     #[test]
     fn unfilled_counts_against_vacancies_not_capacity() {
         // P30 has cap 1 but its only seat is taken by an appointee (not a matched
         // holder), so it has zero vacancies and must NOT report as unfilled.
-        let positions = vec![position(30, 1, &[]).with_appointments(vec![ApplicantIdx(9)])];
+        let positions = [position(30, 1, &[]).with_appointed(1)];
         let result = MatchResult::default();
         assert!(
-            result.unfilled(&positions).is_empty(),
+            result.unfilled(positions.iter()).is_empty(),
             "fully-appointed position has no open seats"
         );
     }
