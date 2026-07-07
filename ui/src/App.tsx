@@ -5,27 +5,19 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import * as api from "./lib/api.ts";
 import type { Snapshot } from "./lib/types.ts";
 import { buildIndexes, type Indexes } from "./lib/indexes.ts";
-import { fmtTime } from "./lib/format.ts";
+import { errorMessage, fmtTime } from "./lib/format.ts";
 import { Icon, Card, Button } from "./components/index.ts";
 import { Toasts, type ToastItem, type ToastKind } from "./components/Toasts.tsx";
 import { Allocations as AllocationsScreen } from "./screens/Allocations.tsx";
 import { DetailPage as DetailPageScreen } from "./screens/DetailPage.tsx";
 import { EventSidebar as EventSidebarScreen } from "./screens/EventSidebar.tsx";
+import { Review as ReviewScreen, type CommitState } from "./screens/Review.tsx";
 
 type Screen = "alloc" | "review";
 type View = "position" | "applicant";
 type Detail = { type: "applicant" | "position"; id: number } | null;
 type Match = { aid: number; pid: number } | null;
 type Theme = "light" | "dark";
-
-interface CommitState {
-  previewed: boolean;
-  committed: boolean;
-  archived: boolean;
-  purged: boolean;
-  committedCount: number;
-  archiveRows: number;
-}
 
 const initialCommitState: CommitState = {
   previewed: false,
@@ -62,16 +54,8 @@ export interface UiHandlers {
   setSearch: (v: string) => void;
   setPage: (p: number) => void;
   toast: (kind: ToastKind, text: string) => void;
-}
-
-function errorMessage(e: unknown): string {
-  if (e instanceof Error) return e.message;
-  if (typeof e === "string") return e;
-  try {
-    return JSON.stringify(e);
-  } catch {
-    return String(e);
-  }
+  setCommitState: (s: CommitState | ((prev: CommitState) => CommitState)) => void;
+  setPurgeText: (v: string) => void;
 }
 
 let toastSeq = 0;
@@ -188,6 +172,8 @@ function App() {
     setSearch,
     setPage,
     toast,
+    setCommitState,
+    setPurgeText,
   };
 
   if (!snapshot) {
@@ -602,8 +588,22 @@ function Allocations({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
   );
 }
 
-function Review(_props: { ui: UiState; handlers: UiHandlers }) {
-  return <div>review</div>;
+function Review({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
+  if (!ui.snapshot || !ui.idx) return null;
+  return (
+    <ReviewScreen
+      snapshot={ui.snapshot}
+      idx={ui.idx}
+      commitState={ui.commitState}
+      purgeText={ui.purgeText}
+      onCommitState={handlers.setCommitState}
+      onPurgeText={handlers.setPurgeText}
+      onOpenMatch={handlers.openMatch}
+      toast={handlers.toast}
+      running={ui.running}
+      onRun={handlers.doRun}
+    />
+  );
 }
 
 function DetailPage({ ui, handlers, onBack }: { ui: UiState; handlers: UiHandlers; onBack: () => void }) {
