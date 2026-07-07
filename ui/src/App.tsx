@@ -10,6 +10,7 @@ import { Icon, Card, Button } from "./components/index.ts";
 import { Toasts, type ToastItem, type ToastKind } from "./components/Toasts.tsx";
 import { Allocations as AllocationsScreen } from "./screens/Allocations.tsx";
 import { DetailPage as DetailPageScreen } from "./screens/DetailPage.tsx";
+import { EventSidebar as EventSidebarScreen } from "./screens/EventSidebar.tsx";
 
 type Screen = "alloc" | "review";
 type View = "position" | "applicant";
@@ -232,7 +233,7 @@ function App() {
             <Review ui={ui} handlers={handlers} />
           )}
         </main>
-        {match ? <EventSidebar ui={ui} onClose={() => setMatch(null)} /> : null}
+        {match ? <EventSidebar ui={ui} handlers={handlers} onClose={() => setMatch(null)} /> : null}
       </div>
       <Toasts toasts={toasts} onDismiss={dismissToast} />
     </div>
@@ -620,8 +621,17 @@ function DetailPage({ ui, handlers, onBack }: { ui: UiState; handlers: UiHandler
   );
 }
 
-function EventSidebar(_props: { ui: UiState; onClose: () => void }) {
-  return <div>match</div>;
+function EventSidebar({ ui, handlers, onClose }: { ui: UiState; handlers: UiHandlers; onClose: () => void }) {
+  if (!ui.snapshot || !ui.idx || !ui.match) return null;
+  return (
+    <EventSidebarScreen
+      match={ui.match}
+      snapshot={ui.snapshot}
+      idx={ui.idx}
+      onClose={onClose}
+      onOpenDetail={handlers.openDetail}
+    />
+  );
 }
 
 export default App;
