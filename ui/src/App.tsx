@@ -1,7 +1,7 @@
 // App.tsx — app shell: TopBar, Sidebar, routing state, toasts (task-12).
 // Ports reference/cca-console-design.html lines 182-268 (app frame, sidebar, topbar)
 // and replaces the mock splash loader with a real "sync to load" empty state.
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import * as api from "./lib/api.ts";
 import type { Snapshot } from "./lib/types.ts";
 import { buildIndexes, type Indexes } from "./lib/indexes.ts";
@@ -98,7 +98,13 @@ function App() {
     const id = toastSeq;
     setToasts((prev) => [...prev, { id, kind, text }]);
   };
-  const dismissToast = (id: number) => setToasts((prev) => prev.filter((t) => t.id !== id));
+  // Stable identity: ToastRow keys its 5s auto-dismiss timer effect on this
+  // callback, so recreating it each render would reset the timer on every
+  // App re-render (nav click, theme toggle, typing).
+  const dismissToast = useCallback(
+    (id: number) => setToasts((prev) => prev.filter((t) => t.id !== id)),
+    [],
+  );
 
   const doSync = async () => {
     if (syncing) return;
