@@ -1,4 +1,4 @@
-use crate::models::{Appeals, Applicant, CapacityStore, Ledger, Roster, Position, RejectReason};
+use crate::models::{Appeals, Applicant, CapacityStore, Ledger, Position, RejectReason, Roster};
 
 /// Pass 2 — Gale-Shapley (deferred acceptance), MainComm + SubComm positions.
 pub fn run(pool: &Roster, appeals: &Appeals, store: &mut CapacityStore, ledger: &mut Ledger) {

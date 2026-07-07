@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use super::allocation::Algorithm;
 use super::applicant::ApplicantIdx;
+use super::cca::Cca;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PositionIdx(pub i32);
@@ -46,7 +47,7 @@ impl FromStr for PositionType {
 pub struct Position {
     /// External database id, retained for output and audit display.
     pub id: PositionIdx,
-    pub cca_name: String,
+    pub cca: Cca,
     pub name: String,
     pub description: Option<String>,
     pub capacity: usize,
@@ -66,7 +67,7 @@ pub struct Position {
 impl Position {
     pub fn new(
         id: i32,
-        cca_name: String,
+        cca: Cca,
         name: String,
         description: Option<String>,
         capacity: usize,
@@ -81,7 +82,7 @@ impl Position {
             .collect();
         Position {
             id: PositionIdx(id),
-            cca_name,
+            cca,
             name,
             description,
             capacity,
@@ -160,7 +161,7 @@ mod tests {
     fn vacancies_is_capacity_minus_appointed() {
         let p = Position::new(
             10,
-            "C".into(),
+            Cca::new(0, "C"),
             "P".into(),
             None,
             3,
@@ -175,7 +176,7 @@ mod tests {
         // More appointees than capacity saturates to 0, never underflows.
         let full = Position::new(
             11,
-            "C".into(),
+            Cca::new(0, "C"),
             "Q".into(),
             None,
             1,
@@ -191,7 +192,7 @@ mod tests {
         // Chair ranks applicants 7, 3, 9 (best first).
         let p = Position::new(
             100,
-            "C".into(),
+            Cca::new(0, "C"),
             "Pos".into(),
             None,
             2,

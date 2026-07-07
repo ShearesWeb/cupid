@@ -143,7 +143,7 @@ impl Default for Ledger {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::PositionType;
+    use crate::models::{Cca, PositionType};
 
     fn applicant(id: i32, prefs: &[i32]) -> Applicant {
         Applicant::new(
@@ -157,7 +157,7 @@ mod tests {
     fn position(id: i32, cap: usize, ranking: &[i32]) -> Position {
         Position::new(
             id,
-            "C".into(),
+            Cca::new(0, "C"),
             format!("P{id}"),
             None,
             cap,
@@ -200,7 +200,10 @@ mod tests {
             .unwrap()
             .step
             .seq;
-        assert!(accept_seq < reject_seq, "seq must increase: {accept_seq} < {reject_seq}");
+        assert!(
+            accept_seq < reject_seq,
+            "seq must increase: {accept_seq} < {reject_seq}"
+        );
     }
 
     #[test]
@@ -240,9 +243,15 @@ mod tests {
 
         let result = ledger.finish();
         assert_eq!(result.positions_of(ApplicantIdx(1)), &[PositionIdx(10)]);
-        assert!(result.positions_of(ApplicantIdx(2)).is_empty(), "loser holds nothing");
+        assert!(
+            result.positions_of(ApplicantIdx(2)).is_empty(),
+            "loser holds nothing"
+        );
 
-        let event = result.history(ApplicantIdx(2), PositionIdx(10)).next().unwrap();
+        let event = result
+            .history(ApplicantIdx(2), PositionIdx(10))
+            .next()
+            .unwrap();
         match event.kind {
             EventKind::Displaced { by, by_chair_rank } => {
                 assert_eq!(by, ApplicantIdx(1));

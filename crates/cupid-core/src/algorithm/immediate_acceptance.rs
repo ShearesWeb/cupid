@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::models::{
-    Appeals, ApplicantIdx, CapacityStore, Ledger, Roster, PositionIdx, RejectReason,
+    Appeals, ApplicantIdx, CapacityStore, Ledger, PositionIdx, RejectReason, Roster,
 };
 
 /// Pass 1 — Immediate Acceptance (Boston mechanism), BlockComm positions only.

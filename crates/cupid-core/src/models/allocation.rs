@@ -146,7 +146,7 @@ impl MatchResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{Ledger, PositionType};
+    use crate::models::{Cca, Ledger, PositionType};
 
     fn applicant(id: i32, prefs: &[i32]) -> Applicant {
         Applicant::new(
@@ -160,7 +160,7 @@ mod tests {
     fn position(id: i32, cap: usize, ranking: &[i32]) -> Position {
         Position::new(
             id,
-            "C".into(),
+            Cca::new(0, "C"),
             format!("P{id}"),
             None,
             cap,
@@ -208,7 +208,10 @@ mod tests {
     fn unfilled_reports_only_positions_with_room() {
         let (_, positions, result) = sample();
         // M (cap 1) is full and omitted; S (cap 2) has one empty seat.
-        assert_eq!(result.unfilled(positions.iter()), vec![(PositionIdx(20), 1)]);
+        assert_eq!(
+            result.unfilled(positions.iter()),
+            vec![(PositionIdx(20), 1)]
+        );
     }
 
     #[test]

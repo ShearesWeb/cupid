@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use super::allocation::Algorithm;
 use super::applicant::{Applicant, ApplicantIdx};
 use super::appointment::Appointments;
+use super::cca::{Cca, CcaIdx};
 use super::position::{Position, PositionIdx};
 
 /// Every applicant and every position, owned and keyed by id, plus the existing
@@ -10,14 +11,22 @@ use super::position::{Position, PositionIdx};
 pub struct Pool {
     applicants: HashMap<ApplicantIdx, Applicant>,
     positions: HashMap<PositionIdx, Position>,
+    ccas: HashMap<CcaIdx, Cca>,
     appointments: Appointments,
 }
 
 impl Pool {
     pub fn new(applicants: Vec<Applicant>, positions: Vec<Position>) -> Self {
+        let positions: HashMap<PositionIdx, Position> =
+            positions.into_iter().map(|p| (p.id, p)).collect();
+        let ccas = positions
+            .values()
+            .map(|p| (p.cca.id, p.cca.clone()))
+            .collect();
         Pool {
             applicants: applicants.into_iter().map(|a| (a.id, a)).collect(),
-            positions: positions.into_iter().map(|p| (p.id, p)).collect(),
+            positions,
+            ccas,
             appointments: Appointments::new(),
         }
     }
@@ -49,6 +58,16 @@ impl Pool {
     /// Position by id, O(1).
     pub fn position(&self, id: PositionIdx) -> Option<&Position> {
         self.positions.get(&id)
+    }
+
+    /// Every CCA that owns at least one position, derived from the positions.
+    pub fn ccas(&self) -> impl Iterator<Item = &Cca> + '_ {
+        self.ccas.values()
+    }
+
+    /// CCA by id, O(1).
+    pub fn cca(&self, id: CcaIdx) -> Option<&Cca> {
+        self.ccas.get(&id)
     }
 }
 
@@ -98,7 +117,7 @@ impl<'a> Roster<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::PositionType;
+    use crate::models::{Cca, CcaIdx, PositionType};
 
     // ---- owned corpus (`Pool`) ----
 
@@ -107,7 +126,7 @@ mod tests {
         let applicants = vec![Applicant::new(1, "Ann".into(), "ann@x".into(), vec![])];
         let positions = vec![Position::new(
             10,
-            "C".into(),
+            Cca::new(0, "C"),
             "Head".into(),
             None,
             1,
@@ -126,7 +145,7 @@ mod tests {
         let applicants = vec![Applicant::new(1, "Ann".into(), "a@x".into(), vec![])];
         let positions = vec![Position::new(
             10,
-            "C".into(),
+            Cca::new(0, "C"),
             "Head".into(),
             None,
             1,
@@ -148,7 +167,7 @@ mod tests {
         let applicants = vec![Applicant::new(1, "Ann".into(), "a@x".into(), vec![])];
         let positions = vec![Position::new(
             10,
-            "C".into(),
+            Cca::new(0, "C"),
             "Head".into(),
             None,
             2,
@@ -167,8 +186,51 @@ mod tests {
                 position: PositionIdx(10),
             },
         ]));
-        assert_eq!(pool.appointments().held_by(ApplicantIdx(1)), &[PositionIdx(10)]);
-        assert_eq!(pool.appointments().holders(PositionIdx(10)), &[ApplicantIdx(1)]);
+        assert_eq!(
+            pool.appointments().held_by(ApplicantIdx(1)),
+            &[PositionIdx(10)]
+        );
+        assert_eq!(
+            pool.appointments().holders(PositionIdx(10)),
+            &[ApplicantIdx(1)]
+        );
+    }
+
+    #[test]
+    fn pool_derives_ccas_from_positions() {
+        let positions = vec![
+            Position::new(
+                10,
+                Cca::new(5, "Chess"),
+                "Head".into(),
+                None,
+                1,
+                PositionType::MainComm,
+                vec![],
+            ),
+            Position::new(
+                11,
+                Cca::new(5, "Chess"),
+                "Sub".into(),
+                None,
+                1,
+                PositionType::SubComm,
+                vec![],
+            ),
+            Position::new(
+                20,
+                Cca::new(6, "Choir"),
+                "Lead".into(),
+                None,
+                1,
+                PositionType::MainComm,
+                vec![],
+            ),
+        ];
+        let pool = Pool::new(vec![], positions);
+        assert_eq!(pool.ccas().count(), 2, "duplicate cca ids collapse");
+        assert_eq!(pool.cca(CcaIdx(5)).unwrap().name, "Chess");
+        assert!(pool.cca(CcaIdx(99)).is_none());
     }
 
     // ---- per-algorithm view (`Roster`) ----
@@ -181,7 +243,7 @@ mod tests {
         let positions = vec![
             Position::new(
                 10,
-                "C".into(),
+                Cca::new(0, "C"),
                 "Block".into(),
                 None,
                 1,
@@ -190,7 +252,7 @@ mod tests {
             ),
             Position::new(
                 20,
-                "C".into(),
+                Cca::new(0, "C"),
                 "Main".into(),
                 None,
                 1,
@@ -199,7 +261,7 @@ mod tests {
             ),
             Position::new(
                 30,
-                "C".into(),
+                Cca::new(0, "C"),
                 "Sub".into(),
                 None,
                 1,
@@ -213,7 +275,11 @@ mod tests {
     #[test]
     fn ia_roster_keeps_only_blockcomm() {
         let (applicants, positions) = fixture();
-        let roster = Roster::for_algorithm(applicants.iter(), positions.iter(), Algorithm::ImmediateAcceptance);
+        let roster = Roster::for_algorithm(
+            applicants.iter(),
+            positions.iter(),
+            Algorithm::ImmediateAcceptance,
+        );
         assert_eq!(roster.positions().count(), 1);
         assert!(
             roster.position(PositionIdx(10)).is_some(),
@@ -232,7 +298,8 @@ mod tests {
     #[test]
     fn gs_roster_keeps_main_and_sub() {
         let (applicants, positions) = fixture();
-        let roster = Roster::for_algorithm(applicants.iter(), positions.iter(), Algorithm::GaleShapley);
+        let roster =
+            Roster::for_algorithm(applicants.iter(), positions.iter(), Algorithm::GaleShapley);
         assert_eq!(roster.positions().count(), 2);
         assert!(roster.position(PositionIdx(20)).is_some());
         assert!(roster.position(PositionIdx(30)).is_some());

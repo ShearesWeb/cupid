@@ -30,8 +30,8 @@ pub fn run(pool: &Pool, appeals: &Appeals) -> MatchResult {
 mod tests {
     use crate::algorithm::run;
     use crate::models::{
-        Appeals, Applicant, ApplicantIdx, Appointment, Appointments, Pool, Position, PositionIdx,
-        PositionType,
+        Appeals, Applicant, ApplicantIdx, Appointment, Appointments, Cca, Pool, Position,
+        PositionIdx, PositionType,
     };
 
     #[test]
@@ -47,7 +47,7 @@ mod tests {
         let positions = vec![
             Position::new(
                 100,
-                "C".into(),
+                Cca::new(0, "C"),
                 "Block".into(),
                 None,
                 1,
@@ -56,7 +56,7 @@ mod tests {
             ),
             Position::new(
                 200,
-                "C".into(),
+                Cca::new(0, "C"),
                 "Main".into(),
                 None,
                 1,
@@ -89,7 +89,7 @@ mod tests {
         let positions = vec![
             Position::new(
                 200,
-                "C".into(),
+                Cca::new(0, "C"),
                 "Main".into(),
                 None,
                 1,
@@ -98,7 +98,7 @@ mod tests {
             ),
             Position::new(
                 300,
-                "C".into(),
+                Cca::new(0, "C"),
                 "Sub A".into(),
                 None,
                 1,
@@ -107,7 +107,7 @@ mod tests {
             ),
             Position::new(
                 301,
-                "C".into(),
+                Cca::new(0, "C"),
                 "Sub B".into(),
                 None,
                 1,
@@ -147,7 +147,7 @@ mod tests {
         ];
         let positions = vec![Position::new(
             200,
-            "C".into(),
+            Cca::new(0, "C"),
             "Main".into(),
             None,
             1,
@@ -180,7 +180,7 @@ mod tests {
         let positions = vec![
             Position::new(
                 30,
-                "C".into(),
+                Cca::new(0, "C"),
                 "M".into(),
                 None,
                 1,
@@ -189,7 +189,7 @@ mod tests {
             ),
             Position::new(
                 40,
-                "C".into(),
+                Cca::new(0, "C"),
                 "N".into(),
                 None,
                 1,
@@ -221,7 +221,7 @@ mod tests {
         ];
         let positions = vec![Position::new(
             50,
-            "C".into(),
+            Cca::new(0, "C"),
             "B".into(),
             None,
             1,
@@ -252,14 +252,14 @@ mod tests {
         let positions = vec![
             Position::new(
                 60,
-                "C".into(),
+                Cca::new(0, "C"),
                 "B".into(),
                 None,
                 1,
                 BlockComm,
                 vec![ApplicantIdx(2), ApplicantIdx(1)],
             ),
-            Position::new(61, "C".into(), "X".into(), None, 1, BlockComm, vec![]), // ranks nobody
+            Position::new(61, Cca::new(0, "C"), "X".into(), None, 1, BlockComm, vec![]), // ranks nobody
         ];
 
         let result = run(&Pool::new(applicants, positions), &Appeals::new());
@@ -287,7 +287,7 @@ mod tests {
         let positions = vec![
             Position::new(
                 70,
-                "C".into(),
+                Cca::new(0, "C"),
                 "B1".into(),
                 None,
                 1,
@@ -296,7 +296,7 @@ mod tests {
             ),
             Position::new(
                 71,
-                "C".into(),
+                Cca::new(0, "C"),
                 "B2".into(),
                 None,
                 1,
@@ -305,7 +305,7 @@ mod tests {
             ),
             Position::new(
                 72,
-                "C".into(),
+                Cca::new(0, "C"),
                 "M".into(),
                 None,
                 1,
@@ -335,7 +335,7 @@ mod tests {
         let positions = vec![
             Position::new(
                 50,
-                "C".into(),
+                Cca::new(0, "C"),
                 "B".into(),
                 None,
                 1,
@@ -370,7 +370,7 @@ mod tests {
         let positions = vec![
             Position::new(
                 40,
-                "C".into(),
+                Cca::new(0, "C"),
                 "M1".into(),
                 None,
                 1,
@@ -380,7 +380,7 @@ mod tests {
             .with_appointed(1),
             Position::new(
                 41,
-                "C".into(),
+                Cca::new(0, "C"),
                 "M2".into(),
                 None,
                 1,
@@ -390,7 +390,7 @@ mod tests {
             .with_appointed(1),
             Position::new(
                 60,
-                "C".into(),
+                Cca::new(0, "C"),
                 "M3".into(),
                 None,
                 1,

@@ -6,7 +6,7 @@ use super::appointments::AppointmentRecord;
 use super::chair_preferences::ChairPrefRecord;
 use super::user_preferences::UserPrefRecord;
 use crate::models::{
-    Appeals, Applicant, ApplicantIdx, Appointments, Pool, Position, PositionIdx, PositionType,
+    Appeals, Applicant, ApplicantIdx, Appointments, Cca, Pool, Position, PositionIdx, PositionType,
 };
 
 /// Build the owned [`Pool`] from the preference tables and existing appointments.
@@ -17,6 +17,7 @@ pub fn derive(
 ) -> Pool {
     // --- Positions (+ chair rankings) from the chair-preference side ---
     struct PosAcc {
+        cca_id: i32,
         cca_name: String,
         name: String,
         capacity: usize,
@@ -32,6 +33,7 @@ pub fn derive(
             continue;
         };
         let acc = pos_acc.entry(r.position_id).or_insert_with(|| PosAcc {
+            cca_id: r.cca_id,
             cca_name: r.cca_name.clone(),
             name: r.position_name.clone(),
             capacity: capacity.max(0) as usize,
@@ -91,7 +93,7 @@ pub fn derive(
         positions.push(
             Position::new(
                 position_id,
-                acc.cca_name,
+                Cca::new(acc.cca_id, acc.cca_name),
                 acc.name,
                 None,
                 acc.capacity,
@@ -138,7 +140,7 @@ pub fn derive_appeals(records: &[AppealRecord], pool: &Pool) -> Result<Appeals, 
     let mut by_position: HashMap<(String, String), Vec<PositionIdx>> = HashMap::new();
     for p in pool.positions() {
         by_position
-            .entry((p.cca_name.trim().to_string(), p.name.trim().to_string()))
+            .entry((p.cca.name.trim().to_string(), p.name.trim().to_string()))
             .or_default()
             .push(p.id);
     }
@@ -233,6 +235,7 @@ mod tests {
             position_name: format!("P{position_id}"),
             position_type: position_type.to_string(),
             capacity,
+            cca_id,
             cca_name: format!("C{cca_id}"),
         }
     }
@@ -318,7 +321,10 @@ mod tests {
 
         // The appointment shrinks the position's vacancies; one seat already gone.
         let p = pool.position(PositionIdx(10)).unwrap();
-        assert_eq!(pool.appointments().holders(PositionIdx(10)), &[ApplicantIdx(2)]);
+        assert_eq!(
+            pool.appointments().holders(PositionIdx(10)),
+            &[ApplicantIdx(2)]
+        );
         assert_eq!(p.vacancies(), 1, "cap 2 minus 1 appointee");
 
         // The non-applicant holder is now an Applicant with empty preferences,
@@ -327,7 +333,10 @@ mod tests {
             .applicant(ApplicantIdx(2))
             .expect("stub applicant added");
         assert!(holder.preferences.is_empty());
-        assert_eq!(pool.appointments().held_by(ApplicantIdx(2)), &[PositionIdx(10)]);
+        assert_eq!(
+            pool.appointments().held_by(ApplicantIdx(2)),
+            &[PositionIdx(10)]
+        );
     }
 
     #[test]
@@ -357,7 +366,10 @@ mod tests {
             a.preferences().is_empty(),
             "held position filtered out of prefs"
         );
-        assert_eq!(pool.appointments().held_by(ApplicantIdx(1)), &[PositionIdx(10)]);
+        assert_eq!(
+            pool.appointments().held_by(ApplicantIdx(1)),
+            &[PositionIdx(10)]
+        );
     }
 
     // ---- appeals resolution (`derive_appeals`) ----
@@ -373,7 +385,7 @@ mod tests {
         ];
         let positions = vec![Position::new(
             10,
-            "Chess".into(),
+            Cca::new(1, "Chess"),
             "Head".into(),
             None,
             1,

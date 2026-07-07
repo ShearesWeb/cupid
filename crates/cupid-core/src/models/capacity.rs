@@ -232,12 +232,16 @@ mod tests {
 
     #[test]
     fn from_pool_seeds_quota_from_appointments() {
-        use crate::models::{Applicant, Appointment, Appointments, Pool, Position, PositionIdx};
+        use crate::models::{
+            Applicant, Appointment, Appointments, Cca, Pool, Position, PositionIdx,
+        };
 
         let applicants = vec![Applicant::new(1, "Ann".into(), "a@x".into(), vec![])];
         let positions = vec![
-            Position::new(10, "C".into(), "M".into(), None, 2, MainComm, vec![]).with_appointed(1),
-            Position::new(20, "C".into(), "S".into(), None, 2, SubComm, vec![]).with_appointed(1),
+            Position::new(10, Cca::new(0, "C"), "M".into(), None, 2, MainComm, vec![])
+                .with_appointed(1),
+            Position::new(20, Cca::new(0, "C"), "S".into(), None, 2, SubComm, vec![])
+                .with_appointed(1),
         ];
         let appointments = Appointments::from_iter([
             Appointment {

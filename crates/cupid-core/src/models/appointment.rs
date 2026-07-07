@@ -28,8 +28,14 @@ impl Appointments {
 
     /// Record that `applicant` already holds `position`.
     pub fn insert(&mut self, applicant: ApplicantIdx, position: PositionIdx) {
-        self.by_position.entry(position).or_default().push(applicant);
-        self.by_applicant.entry(applicant).or_default().push(position);
+        self.by_position
+            .entry(position)
+            .or_default()
+            .push(applicant);
+        self.by_applicant
+            .entry(applicant)
+            .or_default()
+            .push(position);
     }
 
     /// Applicants appointed to `position`.
@@ -53,11 +59,14 @@ impl Appointments {
 
     /// Every appointment as an `(applicant, position)` pair, in no particular order.
     pub fn iter(&self) -> impl Iterator<Item = Appointment> + '_ {
-        self.by_applicant.iter().flat_map(|(&applicant, positions)| {
-            positions
-                .iter()
-                .map(move |&position| Appointment { applicant, position })
-        })
+        self.by_applicant
+            .iter()
+            .flat_map(|(&applicant, positions)| {
+                positions.iter().map(move |&position| Appointment {
+                    applicant,
+                    position,
+                })
+            })
     }
 
     /// Total number of appointments recorded.
@@ -97,7 +106,10 @@ mod tests {
         // Applicant 1 holds positions 10 and 20; position 10 is also held by 2.
         let appointments = Appointments::from_iter([appt(1, 10), appt(1, 20), appt(2, 10)]);
 
-        assert_eq!(appointments.held_by(ApplicantIdx(1)), &[PositionIdx(10), PositionIdx(20)]);
+        assert_eq!(
+            appointments.held_by(ApplicantIdx(1)),
+            &[PositionIdx(10), PositionIdx(20)]
+        );
         assert_eq!(appointments.held_by(ApplicantIdx(2)), &[PositionIdx(10)]);
 
         let mut holders = appointments.holders(PositionIdx(10)).to_vec();

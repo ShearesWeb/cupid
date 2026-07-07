@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use cupid::algorithm::run;
 use cupid::models::{
-    Appeals, Applicant, ApplicantIdx, Appointment, Appointments, Pool, Position, PositionIdx,
+    Appeals, Applicant, ApplicantIdx, Appointment, Appointments, Cca, Pool, Position, PositionIdx,
     PositionType,
 };
 
@@ -69,7 +69,7 @@ fn corpus() -> Pool {
     let positions = vec![
         Position::new(
             101,
-            "C".into(),
+            Cca::new(0, "C"),
             "Product Manager".into(),
             None,
             1,
@@ -78,7 +78,7 @@ fn corpus() -> Pool {
         ),
         Position::new(
             102,
-            "C".into(),
+            Cca::new(0, "C"),
             "Block Committee".into(),
             None,
             2,
@@ -87,7 +87,7 @@ fn corpus() -> Pool {
         ),
         Position::new(
             201,
-            "C".into(),
+            Cca::new(0, "C"),
             "Developer".into(),
             None,
             2,
@@ -96,7 +96,7 @@ fn corpus() -> Pool {
         ),
         Position::new(
             202,
-            "C".into(),
+            Cca::new(0, "C"),
             "Design Subcomm".into(),
             None,
             3,
@@ -105,7 +105,7 @@ fn corpus() -> Pool {
         ),
         Position::new(
             301,
-            "C".into(),
+            Cca::new(0, "C"),
             "Programmes IC".into(),
             None,
             1,
@@ -182,10 +182,8 @@ fn allocates_real_committee_corpus() {
     assert_eq!(result.unmatched(pool.applicants()), vec![ApplicantIdx(6)]);
 
     // --- invariants over the whole corpus ---
-    let type_of: HashMap<PositionIdx, PositionType> = pool
-        .positions()
-        .map(|p| (p.id, p.position_type))
-        .collect();
+    let type_of: HashMap<PositionIdx, PositionType> =
+        pool.positions().map(|p| (p.id, p.position_type)).collect();
     for p in pool.positions() {
         assert!(
             result.for_position(p.id).len() <= p.capacity,
@@ -226,7 +224,7 @@ fn appointments_reduce_seats_and_quota() {
     let positions = vec![
         Position::new(
             100,
-            "C".into(),
+            Cca::new(0, "C"),
             "Solo".into(),
             None,
             1,
@@ -236,14 +234,23 @@ fn appointments_reduce_seats_and_quota() {
         .with_appointed(1),
         Position::new(
             101,
-            "C".into(),
+            Cca::new(0, "C"),
             "Open".into(),
             None,
             1,
             MainComm,
             vec![ApplicantIdx(2)],
         ),
-        Position::new(102, "C".into(), "Held".into(), None, 1, MainComm, vec![]).with_appointed(1),
+        Position::new(
+            102,
+            Cca::new(0, "C"),
+            "Held".into(),
+            None,
+            1,
+            MainComm,
+            vec![],
+        )
+        .with_appointed(1),
     ];
     let pool = Pool::new(applicants, positions).with_appointments(Appointments::from_iter([
         Appointment {

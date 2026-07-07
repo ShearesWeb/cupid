@@ -11,6 +11,7 @@ pub struct ChairPrefRecord {
     pub position_name: String,
     pub position_type: String,
     pub capacity: Option<i32>,
+    pub cca_id: i32,
     pub cca_name: String,
 }
 
@@ -19,7 +20,7 @@ pub fn load(client: &mut Client) -> Result<Vec<ChairPrefRecord>, Box<dyn Error>>
     let rows = client.query(
         "SELECT pp.position_id, pp.user_id, pp.rank, \
                 cp.name AS position_name, cp.position_type::text AS position_type, \
-                cp.capacity, c.name AS cca_name \
+                cp.capacity, c.id AS cca_id, c.name AS cca_name \
          FROM cca_position_preferences pp \
          JOIN cca_positions cp ON cp.id = pp.position_id \
          JOIN ccas c ON c.id = cp.cca_id",
@@ -34,6 +35,7 @@ pub fn load(client: &mut Client) -> Result<Vec<ChairPrefRecord>, Box<dyn Error>>
             position_name: row.get("position_name"),
             position_type: row.get("position_type"),
             capacity: row.get("capacity"),
+            cca_id: row.get("cca_id"),
             cca_name: row.get("cca_name"),
         })
         .collect())
