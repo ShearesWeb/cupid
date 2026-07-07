@@ -1,6 +1,7 @@
 // shared.tsx — screen atoms reused across Allocations/Review/detail screens.
 // Ports reference/cca-console-design.html: emptyState (278-284), runPrompt (285-292),
-// legend (293-301), pager (306-316).
+// legend (293-301), pager (306-316), section (457-460), detailHero (461-473), iconTile (540-542).
+import type { ReactNode } from "react";
 import { Card, Button, Icon } from "../components/index.ts";
 import { statusStyle } from "../components/statusStyle.ts";
 import type { Status } from "../lib/types.ts";
@@ -141,6 +142,123 @@ export function Pager({
         Page {clamped + 1} of {pages}
       </span>
       {btn("chevron-right", clamped >= pages - 1, 1)}
+    </div>
+  );
+}
+
+// ---- detail-page atoms (port of reference lines 457-542) -----------------
+export function Section({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <div
+        style={{
+          fontSize: 10.5,
+          fontWeight: 700,
+          letterSpacing: "0.6px",
+          textTransform: "uppercase",
+          color: "#DB2A63",
+          marginBottom: 9,
+        }}
+      >
+        {title}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+export function DetailHero({
+  leading,
+  eyebrow,
+  title,
+  badge,
+  right,
+  rightValue,
+  rightLabel,
+  rightColor,
+}: {
+  leading: ReactNode;
+  eyebrow: string;
+  title: string;
+  badge?: ReactNode;
+  right?: ReactNode;
+  rightValue?: string;
+  rightLabel?: string;
+  rightColor?: string;
+}) {
+  return (
+    <div style={{ display: "flex", alignItems: "flex-start", gap: 13, marginBottom: 22 }}>
+      {leading}
+      <div style={{ flex: 1, minWidth: 0, paddingTop: 2 }}>
+        <div
+          style={{
+            fontSize: 11.5,
+            color: "var(--token-color-foreground-faint)",
+            fontWeight: 600,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {eyebrow}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 2 }}>
+          <span style={{ fontSize: 19, fontWeight: 700, color: "var(--token-color-foreground-strong)", letterSpacing: "-0.3px" }}>
+            {title}
+          </span>
+          {badge ?? null}
+        </div>
+      </div>
+      {right !== undefined
+        ? right
+        : rightValue != null
+          ? (
+              <div style={{ textAlign: "right", flexShrink: 0 }}>
+                <div
+                  style={{
+                    fontSize: 18,
+                    fontWeight: 700,
+                    fontFamily: "var(--token-typography-font-stack-code)",
+                    color: rightColor || "var(--token-color-foreground-strong)",
+                    lineHeight: 1,
+                  }}
+                >
+                  {rightValue}
+                </div>
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: "var(--token-color-foreground-faint)",
+                    marginTop: 3,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.5px",
+                    fontWeight: 600,
+                  }}
+                >
+                  {rightLabel}
+                </div>
+              </div>
+            )
+          : null}
+    </div>
+  );
+}
+
+export function IconTile({ name }: { name: string }) {
+  return (
+    <div
+      style={{
+        width: 42,
+        height: 42,
+        borderRadius: 11,
+        background: "var(--token-color-surface-strong)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+      }}
+    >
+      <Icon name={name} size={21} color="var(--token-color-foreground-faint)" />
     </div>
   );
 }

@@ -7,3 +7,5 @@ export * from "./Badge.tsx";
 export * from "./Avatar.tsx";
 export * from "./TextInput.tsx";
 export * from "./statusStyle.ts";
+export * from "./MatchRow.tsx";
+export * from "./QuotaWidget.tsx";

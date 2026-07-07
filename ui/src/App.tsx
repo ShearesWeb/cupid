@@ -9,6 +9,7 @@ import { fmtTime } from "./lib/format.ts";
 import { Icon, Card, Button } from "./components/index.ts";
 import { Toasts, type ToastItem, type ToastKind } from "./components/Toasts.tsx";
 import { Allocations as AllocationsScreen } from "./screens/Allocations.tsx";
+import { DetailPage as DetailPageScreen } from "./screens/DetailPage.tsx";
 
 type Screen = "alloc" | "review";
 type View = "position" | "applicant";
@@ -604,8 +605,19 @@ function Review(_props: { ui: UiState; handlers: UiHandlers }) {
   return <div>review</div>;
 }
 
-function DetailPage(_props: { ui: UiState; handlers: UiHandlers; onBack: () => void }) {
-  return <div>detail</div>;
+function DetailPage({ ui, handlers, onBack }: { ui: UiState; handlers: UiHandlers; onBack: () => void }) {
+  if (!ui.snapshot || !ui.idx || !ui.detail) return null;
+  return (
+    <DetailPageScreen
+      detail={ui.detail}
+      snapshot={ui.snapshot}
+      idx={ui.idx}
+      screen={ui.screen}
+      onBack={onBack}
+      onOpenMatch={handlers.openMatch}
+      onOpenDetail={handlers.openDetail}
+    />
+  );
 }
 
 function EventSidebar(_props: { ui: UiState; onClose: () => void }) {
