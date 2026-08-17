@@ -104,9 +104,7 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            ui/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -123,8 +121,8 @@ jobs:
             libayatana-appindicator3-dev librsvg2-dev \
             libssl-dev patchelf file
 
-      # postinstall pulls the ui workspace in; tauri-action finds the root
-      # package.json and drives the build through its `tauri` script.
+      # One install covers the root and the ui workspace; tauri-action finds
+      # the root package.json and drives the build through its `tauri` script.
       - run: npm ci
 
       - uses: tauri-apps/tauri-action@v0

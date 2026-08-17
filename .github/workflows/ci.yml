@@ -16,12 +16,12 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: package-lock.json
 
-      - run: npm --prefix ui ci
-      - run: npm --prefix ui run lint
-      - run: npm --prefix ui run test
-      - run: npm --prefix ui run build
+      - run: npm ci
+      - run: npm run lint -w ui
+      - run: npm run test -w ui
+      - run: npm run build -w ui
 
   rust:
     runs-on: ubuntu-latest
@@ -40,12 +40,12 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: package-lock.json
 
       # tauri-build reads frontendDist (../ui/dist) while compiling src-tauri,
       # so the bundle has to exist before cargo runs.
-      - run: npm --prefix ui ci
-      - run: npm --prefix ui run build
+      - run: npm ci
+      - run: npm run build -w ui
 
       - uses: dtolnay/rust-toolchain@stable
         with:

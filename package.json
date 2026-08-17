@@ -1,11 +1,13 @@
 {
   "name": "cupid",
   "private": true,
+  "workspaces": [
+    "ui"
+  ],
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
-    "tauri": "tauri",
-    "postinstall": "npm --prefix ui install"
+    "tauri": "tauri"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4"

@@ -5,8 +5,8 @@
   "identifier": "app.shearesweb.cupid",
   "build": {
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "npm --prefix ui run dev",
-    "beforeBuildCommand": "npm --prefix ui run build",
+    "beforeDevCommand": "npm run dev -w ui",
+    "beforeBuildCommand": "npm run build -w ui",
     "frontendDist": "../ui/dist"
   },
   "app": {
@@ -40,7 +40,7 @@
       "endpoints": [
         "https://github.com/ShearesWeb/cupid/releases/latest/download/latest.json"
       ],
-      "pubkey": "REPLACE_WITH_TAURI_SIGNER_PUBLIC_KEY"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZDQTc4RDJGNzQyN0IxMDYKUldRR3NTZDBMNDJuYktYS0QvY3l4eXIxU2hYd21yVDcwL3AzanB0SE5TWGdmekhEdC9DRWo5NGoK"
     }
   }
 }
