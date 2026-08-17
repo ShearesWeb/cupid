@@ -209,8 +209,11 @@ impl ConnSpec {
             }
             ConnSpec::Url(url) => match url.parse::<Config>() {
                 Ok(config) => {
+                    // Host::Unix is #[cfg(unix)] in tokio-postgres, so the arm
+                    // cannot be named at all on Windows.
                     let host = match config.get_hosts().first() {
                         Some(Host::Tcp(host)) => host.clone(),
+                        #[cfg(unix)]
                         Some(Host::Unix(path)) => path.display().to_string(),
                         None => "unknown host".to_string(),
                     };

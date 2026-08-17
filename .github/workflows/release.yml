@@ -110,7 +110,10 @@ jobs:
         with:
           targets: aarch64-apple-darwin
 
+      # A failed bundle still costs a full dependency compile, so keep it.
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Install Linux system deps
         if: matrix.platform == 'ubuntu-latest'
