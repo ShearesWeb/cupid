@@ -4,19 +4,24 @@ use postgres::Client;
 
 /// One row of `cca_appointments` joined to the holder's identity. An appointment
 /// is a position the user already holds; `commitment_period` is intentionally not
-/// loaded (cupid treats every appointment as full-year).
+/// loaded (cupid treats every appointment as full-year). The denormalized
+/// `cca_id` and `position_type` columns feed the one-per-CCA rule even for
+/// positions outside cupid's market.
 #[derive(Debug)]
 pub struct AppointmentRecord {
     pub user_id: i32,
     pub user_name: String,
     pub user_email: String,
     pub position_id: i32,
+    pub cca_id: i32,
+    pub position_type: String,
 }
 
 /// Load the DB `cca_appointments` joined to `users`.
 pub fn load(client: &mut Client) -> Result<Vec<AppointmentRecord>, Box<dyn Error>> {
     let rows = client.query(
-        "SELECT ca.user_id, u.name AS user_name, u.email AS user_email, ca.position_id \
+        "SELECT ca.user_id, u.name AS user_name, u.email AS user_email, ca.position_id, \
+                ca.cca_id, ca.position_type::text AS position_type \
          FROM cca_appointments ca \
          JOIN users u ON u.id = ca.user_id",
         &[],
@@ -28,6 +33,8 @@ pub fn load(client: &mut Client) -> Result<Vec<AppointmentRecord>, Box<dyn Error
             user_name: row.get("user_name"),
             user_email: row.get("user_email"),
             position_id: row.get("position_id"),
+            cca_id: row.get("cca_id"),
+            position_type: row.get("position_type"),
         })
         .collect())
 }

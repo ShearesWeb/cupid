@@ -26,7 +26,7 @@ export interface Indexes {
   chairRankIndex: Map<string, number>; // pk -> 1-based
   prefRankIndex: Map<string, number>; // pk -> 1-based
   newAllocations: AssignmentView[]; // kind === "allocated"
-  appealAllocations: AssignmentView[]; // kind === "appealed"
+  preallocatedAllocations: AssignmentView[]; // kind === "preallocated"
 }
 
 export function buildIndexes(s: Snapshot): Indexes {
@@ -79,7 +79,7 @@ export function buildIndexes(s: Snapshot): Indexes {
   }
 
   const newAllocations = assignments.filter((a) => a.kind === "allocated");
-  const appealAllocations = assignments.filter((a) => a.kind === "appealed");
+  const preallocatedAllocations = assignments.filter((a) => a.kind === "preallocated");
 
   const chairRankOf = (pid: number, aid: number): number | null =>
     chairRankIndex.get(pk(aid, pid)) ?? null;
@@ -101,6 +101,6 @@ export function buildIndexes(s: Snapshot): Indexes {
     chairRankIndex,
     prefRankIndex,
     newAllocations,
-    appealAllocations,
+    preallocatedAllocations,
   };
 }

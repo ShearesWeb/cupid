@@ -1,10 +1,13 @@
-// Appeals.tsx — manage quota-exempt (applicant, position) exemptions.
-// Appeals persist in cca_appeals; granting or revoking one invalidates the
-// current run, so outcome pills here fall back to pending until a re-run.
+// Preallocations.tsx — manage operator-fixed (applicant, position) assignments.
+// Preallocations persist in a local store file on this machine (never the
+// database); the pair holds the position outright: it is seated before
+// matching, consumes the seat and the holder's quota, and cannot be
+// displaced. Granting or revoking one invalidates the current run, so
+// outcome pills here fall back to pending until a re-run.
 import { useState } from "react";
 
 import { Avatar } from "../components/Avatar.tsx";
-import { Badge } from "../components/Badge.tsx";
+import { PositionTypeBadge } from "../components/PositionTypeBadge.tsx";
 import { Button } from "../components/Button.tsx";
 import { Card } from "../components/Card.tsx";
 import { Icon } from "../components/Icon.tsx";
@@ -14,7 +17,7 @@ import type { Indexes } from "../lib/indexes";
 import { pk } from "../lib/indexes";
 import type { Snapshot } from "../lib/types";
 
-export interface AppealsProps {
+export interface PreallocationsProps {
   snapshot: Snapshot;
   idx: Indexes;
   onAdd: (applicantId: number, positionId: number, note: string | null) => Promise<boolean>;
@@ -129,7 +132,7 @@ function Combo({
               }}
             >
               <span style={{ fontWeight: 600, color: "var(--token-color-foreground-strong)" }}>{o.label}</span>
-              {o.badge ? <Badge color={o.badge === "main" ? "highlight" : "neutral"} text={o.badge} /> : null}
+              {o.badge ? <PositionTypeBadge type={o.badge} /> : null}
               <span
                 style={{
                   marginLeft: "auto",
@@ -151,7 +154,7 @@ function Combo({
   );
 }
 
-export function Appeals({ snapshot, idx, onAdd, onRemove, onOpenMatch, toast }: AppealsProps) {
+export function Preallocations({ snapshot, idx, onAdd, onRemove, onOpenMatch, toast }: PreallocationsProps) {
   const [applicant, setApplicant] = useState<Option | null>(null);
   const [position, setPosition] = useState<Option | null>(null);
   const [note, setNote] = useState("");
@@ -180,7 +183,7 @@ export function Appeals({ snapshot, idx, onAdd, onRemove, onOpenMatch, toast }: 
   };
 
   const duplicate =
-    applicant && position && snapshot.appeals.some((a) => a.applicantId === applicant.id && a.positionId === position.id);
+    applicant && position && snapshot.preallocations.some((a) => a.applicantId === applicant.id && a.positionId === position.id);
 
   const grant = async () => {
     if (!applicant || !position || busy) return;
@@ -216,7 +219,7 @@ export function Appeals({ snapshot, idx, onAdd, onRemove, onOpenMatch, toast }: 
     <div style={{ padding: "24px 28px 48px", maxWidth: 860, margin: "0 auto" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
         <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, letterSpacing: "-0.4px", color: "var(--token-color-foreground-strong)" }}>
-          Appeals
+          Preallocations
         </h1>
         <span
           style={{
@@ -232,12 +235,12 @@ export function Appeals({ snapshot, idx, onAdd, onRemove, onOpenMatch, toast }: 
             fontWeight: 700,
           }}
         >
-          {snapshot.appeals.length} granted
+          {snapshot.preallocations.length} granted
         </span>
       </div>
       <p style={{ margin: "0 0 18px", fontSize: 13, color: "var(--token-color-foreground-faint)", maxWidth: 620 }}>
-        Quota-exempt pairings. An appeal bypasses the applicant's personal quota but still competes for seats. Changing
-        appeals invalidates the current run.
+        Operator-fixed assignments. A preallocated resident holds the position outright: the pair is seated before
+        matching, consumes the seat and quota, and cannot be displaced. Changing preallocations invalidates the current run.
       </p>
 
       <Card level="base" padding="none" style={{ overflow: "visible", marginBottom: 18 }}>
@@ -252,7 +255,7 @@ export function Appeals({ snapshot, idx, onAdd, onRemove, onOpenMatch, toast }: 
             color: "#DB2A63",
           }}
         >
-          Grant an appeal
+          Preallocate a position
         </div>
         <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -266,19 +269,19 @@ export function Appeals({ snapshot, idx, onAdd, onRemove, onOpenMatch, toast }: 
             <div style={{ flex: 1, minWidth: 260 }}>
               <TextInput
                 label="Note (optional)"
-                placeholder="Why is this exemption granted?"
+                placeholder="Why does this resident hold the position outright?"
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
               />
             </div>
             <Button color="primary" icon="plus" busy={busy} disabled={!applicant || !position || !!duplicate} onClick={grant}>
-              {duplicate ? "Already granted" : "Grant appeal"}
+              {duplicate ? "Already granted" : "Preallocate"}
             </Button>
           </div>
         </div>
       </Card>
 
-      {snapshot.appeals.length === 0 ? (
+      {snapshot.preallocations.length === 0 ? (
         <Card
           level="base"
           padding="large"
@@ -297,14 +300,14 @@ export function Appeals({ snapshot, idx, onAdd, onRemove, onOpenMatch, toast }: 
           >
             <Icon name="tag" size={20} color="var(--token-color-foreground-faint)" />
           </div>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "var(--token-color-foreground-strong)" }}>No appeals granted</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "var(--token-color-foreground-strong)" }}>No preallocations</div>
           <div style={{ fontSize: 12.5, color: "var(--token-color-foreground-faint)" }}>
-            Grant one above to exempt a pairing from the personal quota.
+            Preallocate one above to hand a resident a position outright.
           </div>
         </Card>
       ) : (
         <Card level="base" padding="none" style={{ overflow: "hidden" }}>
-          {snapshot.appeals.map((ap, i) => {
+          {snapshot.preallocations.map((ap, i) => {
             const key = pk(ap.applicantId, ap.positionId);
             const app = idx.appById.get(ap.applicantId);
             const pos = idx.posById.get(ap.positionId);
@@ -362,7 +365,7 @@ export function Appeals({ snapshot, idx, onAdd, onRemove, onOpenMatch, toast }: 
                   </Button>
                 ) : (
                   <button
-                    title="Revoke appeal"
+                    title="Remove preallocation"
                     onClick={() => setArmed(key)}
                     style={{
                       display: "flex",

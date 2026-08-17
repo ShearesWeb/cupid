@@ -7,8 +7,8 @@ use std::collections::HashMap;
 
 use cupid::algorithm::run;
 use cupid::models::{
-    Appeals, Applicant, ApplicantIdx, Appointment, Appointments, Cca, Pool, Position, PositionIdx,
-    PositionType,
+    Applicant, ApplicantIdx, Appointment, Appointments, Cca, Pool, Position, PositionIdx,
+    PositionType, Preallocations,
 };
 
 fn corpus() -> Pool {
@@ -69,7 +69,7 @@ fn corpus() -> Pool {
     let positions = vec![
         Position::new(
             101,
-            Cca::new(0, "C"),
+            Cca::new(1, "Media"),
             "Product Manager".into(),
             None,
             1,
@@ -78,7 +78,7 @@ fn corpus() -> Pool {
         ),
         Position::new(
             102,
-            Cca::new(0, "C"),
+            Cca::new(2, "Block"),
             "Block Committee".into(),
             None,
             2,
@@ -87,7 +87,7 @@ fn corpus() -> Pool {
         ),
         Position::new(
             201,
-            Cca::new(0, "C"),
+            Cca::new(3, "Web"),
             "Developer".into(),
             None,
             2,
@@ -96,7 +96,7 @@ fn corpus() -> Pool {
         ),
         Position::new(
             202,
-            Cca::new(0, "C"),
+            Cca::new(4, "Design"),
             "Design Subcomm".into(),
             None,
             3,
@@ -105,7 +105,7 @@ fn corpus() -> Pool {
         ),
         Position::new(
             301,
-            Cca::new(0, "C"),
+            Cca::new(5, "Programmes"),
             "Programmes IC".into(),
             None,
             1,
@@ -125,7 +125,7 @@ fn sorted(mut v: Vec<i32>) -> Vec<i32> {
 #[test]
 fn allocates_real_committee_corpus() {
     let pool = corpus();
-    let result = run(&pool, &Appeals::new());
+    let result = run(&pool, &Preallocations::new());
 
     // --- exact holdings per applicant (sorted position-id sets) ---
     let held = |id: i32| {
@@ -224,7 +224,7 @@ fn appointments_reduce_seats_and_quota() {
     let positions = vec![
         Position::new(
             100,
-            Cca::new(0, "C"),
+            Cca::new(1, "C1"),
             "Solo".into(),
             None,
             1,
@@ -234,7 +234,7 @@ fn appointments_reduce_seats_and_quota() {
         .with_appointed(1),
         Position::new(
             101,
-            Cca::new(0, "C"),
+            Cca::new(1, "Media"),
             "Open".into(),
             None,
             1,
@@ -243,7 +243,7 @@ fn appointments_reduce_seats_and_quota() {
         ),
         Position::new(
             102,
-            Cca::new(0, "C"),
+            Cca::new(2, "Block"),
             "Held".into(),
             None,
             1,
@@ -263,7 +263,7 @@ fn appointments_reduce_seats_and_quota() {
         },
     ]));
 
-    let result = run(&pool, &Appeals::new());
+    let result = run(&pool, &Preallocations::new());
 
     // P100's only seat is taken by the appointee -> applicant 1 gets nothing there.
     assert!(

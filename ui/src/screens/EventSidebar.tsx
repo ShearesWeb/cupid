@@ -26,6 +26,7 @@ function buildTimeline(
   hasRun: boolean,
   existing: boolean,
   quotaFull: boolean,
+  preallocated: boolean,
 ): TimelineItem[] {
   const items: TimelineItem[] = [];
   if (existing) {
@@ -38,7 +39,12 @@ function buildTimeline(
   }
   for (const e of events) {
     if (e.kind === "accept") {
-      items.push({ icon: "check-circle", status: "allocated", title: "Allocated", detail: e.detail });
+      // A preallocated pair's accept is the operator's doing, not the matcher's.
+      items.push(
+        preallocated
+          ? { icon: "check-circle", status: "preallocated", title: "Preallocated", detail: e.detail }
+          : { icon: "check-circle", status: "allocated", title: "Allocated", detail: e.detail },
+      );
     } else if (e.kind === "displace") {
       items.push({ icon: "alert-triangle", status: "displaced", title: "Displaced", detail: e.detail });
     } else {
@@ -78,7 +84,7 @@ export function EventSidebar({ match, snapshot, idx, onClose, onOpenDetail }: Ev
   const hasRun = snapshot.run !== null;
   const cr = idx.chairRankOf(pid, aid);
   const pr = idx.prefRankOf(aid, pid);
-  const items = buildTimeline(events, hasRun, existing, outcome?.status === "quota");
+  const items = buildTimeline(events, hasRun, existing, outcome?.status === "quota", outcome?.status === "preallocated");
 
   return (
     <aside

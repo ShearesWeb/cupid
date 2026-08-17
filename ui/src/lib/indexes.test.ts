@@ -16,9 +16,9 @@ const snap: Snapshot = {
     { id: 3, name: "Cid", email: "cid@x", prefs: [11] },
   ],
   committed: [{ applicantId: 3, positionId: 11 }],
-  appeals: [{ applicantId: 3, positionId: 11, note: null }],
+  preallocations: [{ applicantId: 3, positionId: 11, note: null }],
   quota: [
-    { applicantId: 1, main: 1, block: 0, sub: 0, appealed: 0,
+    { applicantId: 1, main: 1, block: 0, sub: 0,
       canAddMain: true, canAddBlock: true, canAddSub: true, over: false },
   ],
   seats: [
@@ -32,7 +32,7 @@ const snap: Snapshot = {
   run: {
     assignments: [
       { applicantId: 1, positionId: 10, kind: "allocated", chairRank: 1, prefRank: 1 },
-      { applicantId: 3, positionId: 11, kind: "appealed", chairRank: 1, prefRank: 1 },
+      { applicantId: 3, positionId: 11, kind: "preallocated", chairRank: 1, prefRank: 1 },
     ],
     events: [
       { applicantId: 2, positionId: 10, seq: 0, kind: "accept", byApplicantId: null, detail: "Allocated at chair-rank 2 (their preference #1)." },
@@ -59,6 +59,6 @@ describe("buildIndexes", () => {
   });
   it("splits assignments by kind", () => {
     expect(idx.newAllocations.length).toBe(1);
-    expect(idx.appealAllocations.length).toBe(1);
+    expect(idx.preallocatedAllocations.length).toBe(1);
   });
 });

@@ -7,9 +7,11 @@ export interface TextInputProps {
   icon?: ReactNode;
   value: string;
   onChange: (e: ChangeEvent<HTMLInputElement>) => void;
+  /// Input type, e.g. "password" for masked credentials. Defaults to "text".
+  type?: string;
 }
 
-export function TextInput({ label, placeholder, icon, value, onChange }: TextInputProps) {
+export function TextInput({ label, placeholder, icon, value, onChange, type }: TextInputProps) {
   const field = (
     <div
       style={{
@@ -28,6 +30,7 @@ export function TextInput({ label, placeholder, icon, value, onChange }: TextInp
         value={value}
         onChange={onChange}
         placeholder={placeholder}
+        type={type ?? "text"}
         style={{
           flex: 1,
           minWidth: 0,

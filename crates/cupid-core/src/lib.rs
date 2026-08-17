@@ -2,5 +2,6 @@
 //! integration tests (`tests/`) both consume the crate through these modules.
 pub mod algorithm;
 pub mod data;
+pub mod export;
 pub mod models;
 pub mod snapshot;

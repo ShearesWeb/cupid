@@ -1,11 +1,11 @@
 // QuotaWidget.tsx — port of the reference quotaWidget visual frame (cca-console-design.html
-// lines 474-539: token chips, status word colors, caption, appeal row) with a SEMANTIC
+// lines 474-539: token chips, status word colors, caption) with a SEMANTIC
 // deviation from the mock: this engine's quota rule is `HeldCounts::within_quota` (main+block
 // <= 2, sub <= 3, not both main>=1 and sub>=2) — not the mock's "3 valid loadouts" checklist —
 // so the "Valid loadouts" section is dropped entirely. Everything here is read straight off
 // `QuotaView` (idx.quotaByApp.get(aid)); no domain recomputation happens in the UI.
+// Preallocated seats count in the ordinary type buckets, so no separate row exists.
 import type { ReactNode } from "react";
-import { Icon } from "./Icon.tsx";
 import { statusStyle } from "./statusStyle.ts";
 import type { QuotaView } from "../lib/types.ts";
 
@@ -23,7 +23,7 @@ function loadoutText(main: number, block: number, sub: number): string {
 }
 
 export function QuotaWidget({ quota, hasRun }: QuotaWidgetProps) {
-  const { main, block, sub, appealed, canAddMain, canAddBlock, canAddSub, over } = quota;
+  const { main, block, sub, canAddMain, canAddBlock, canAddSub, over } = quota;
   const full = !over && !canAddMain && !canAddBlock && !canAddSub;
 
   let statusWord: string;
@@ -87,8 +87,6 @@ export function QuotaWidget({ quota, hasRun }: QuotaWidgetProps) {
   for (let i = 0; i < block; i++) tokens.push(chip(`b${i}`, "B", 34));
   for (let i = 0; i < sub; i++) tokens.push(chip(`s${i}`, "S", 21));
 
-  const appealSt = statusStyle("appealed");
-
   return (
     <div
       style={{
@@ -146,42 +144,6 @@ export function QuotaWidget({ quota, hasRun }: QuotaWidgetProps) {
       >
         {caption}
       </div>
-      {appealed > 0 ? (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 7,
-            marginTop: 10,
-            paddingTop: 9,
-            borderTop: "1px dashed var(--token-color-border-strong)",
-          }}
-        >
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 4,
-              height: 20,
-              padding: "0 9px",
-              borderRadius: 20,
-              background: appealSt.bg,
-              color: appealSt.fg,
-              border: "1px solid " + appealSt.bd,
-              fontSize: 10.5,
-              fontWeight: 700,
-              whiteSpace: "nowrap",
-              flexShrink: 0,
-            }}
-          >
-            <Icon name="plus" size={12} color={appealSt.dot} />
-            {appealed} appeal
-          </span>
-          <span style={{ fontSize: 10.5, color: "var(--token-color-foreground-faint)", whiteSpace: "nowrap" }}>
-            exempt, uncounted
-          </span>
-        </div>
-      ) : null}
     </div>
   );
 }

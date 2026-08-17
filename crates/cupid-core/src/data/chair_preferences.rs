@@ -2,28 +2,25 @@ use std::error::Error;
 
 use postgres::Client;
 
-/// One row of `cca_position_preferences`, joined to the position's metadata.
+/// One row of `preferred_candidates`, joined to the candidate's identity. A
+/// chair may shortlist someone who never applied, so the ranking is the only
+/// place that candidate's name appears.
 #[derive(Debug)]
 pub struct ChairPrefRecord {
     pub position_id: i32,
     pub user_id: i32,
     pub rank: i32,
-    pub position_name: String,
-    pub position_type: String,
-    pub capacity: Option<i32>,
-    pub cca_id: i32,
-    pub cca_name: String,
+    pub user_name: String,
+    pub user_email: String,
 }
 
-/// Load the DB `cca_position_preferences` into `ChairPrefRecord>`.
+/// Load the DB `preferred_candidates` into `ChairPrefRecord`s.
 pub fn load(client: &mut Client) -> Result<Vec<ChairPrefRecord>, Box<dyn Error>> {
     let rows = client.query(
-        "SELECT pp.position_id, pp.user_id, pp.rank, \
-                cp.name AS position_name, cp.position_type::text AS position_type, \
-                cp.capacity, c.id AS cca_id, c.name AS cca_name \
-         FROM cca_position_preferences pp \
-         JOIN cca_positions cp ON cp.id = pp.position_id \
-         JOIN ccas c ON c.id = cp.cca_id",
+        "SELECT pc.position_id, pc.user_id, pc.rank, \
+                u.name AS user_name, u.email AS user_email \
+         FROM preferred_candidates pc \
+         JOIN users u ON u.id = pc.user_id",
         &[],
     )?;
     Ok(rows
@@ -32,11 +29,8 @@ pub fn load(client: &mut Client) -> Result<Vec<ChairPrefRecord>, Box<dyn Error>>
             position_id: row.get("position_id"),
             user_id: row.get("user_id"),
             rank: row.get("rank"),
-            position_name: row.get("position_name"),
-            position_type: row.get("position_type"),
-            capacity: row.get("capacity"),
-            cca_id: row.get("cca_id"),
-            cca_name: row.get("cca_name"),
+            user_name: row.get("user_name"),
+            user_email: row.get("user_email"),
         })
         .collect())
 }

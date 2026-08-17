@@ -3,29 +3,43 @@
 // and replaces the mock splash loader with a real "sync to load" empty state.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import * as api from "./lib/api.ts";
-import type { Snapshot } from "./lib/types.ts";
+import type { PositionType, Snapshot } from "./lib/types.ts";
 import { buildIndexes, type Indexes } from "./lib/indexes.ts";
 import { errorMessage, fmtTime } from "./lib/format.ts";
 import { Icon, Card, Button } from "./components/index.ts";
 import { Toasts, type ToastItem, type ToastKind } from "./components/Toasts.tsx";
+import { UpdatePrompt } from "./components/UpdatePrompt.tsx";
+import {
+  appVersion,
+  checkForUpdate,
+  dismissUpdate,
+  installUpdate,
+  updatesSupported,
+  type PendingUpdate,
+} from "./lib/updater.ts";
 import { Allocations as AllocationsScreen } from "./screens/Allocations.tsx";
-import { Appeals as AppealsScreen } from "./screens/Appeals.tsx";
 import { DetailPage as DetailPageScreen } from "./screens/DetailPage.tsx";
 import { EventSidebar as EventSidebarScreen } from "./screens/EventSidebar.tsx";
+import { Preallocations as PreallocationsScreen } from "./screens/Preallocations.tsx";
 import { Review as ReviewScreen, type CommitState } from "./screens/Review.tsx";
+import { TextInput } from "./components/TextInput.tsx";
 
-type Screen = "alloc" | "appeals" | "review";
+type Screen = "alloc" | "prealloc" | "review";
 type View = "position" | "applicant";
+type TypeFilter = "all" | PositionType;
 type Detail = { type: "applicant" | "position"; id: number } | null;
 type Match = { aid: number; pid: number } | null;
 type Theme = "light" | "dark";
 
 const initialCommitState: CommitState = {
   previewed: false,
-  committed: false,
+  accessChecked: false,
+  exported: false,
   archived: false,
   purged: false,
-  committedCount: 0,
+  exportedRows: 0,
+  branch: null,
+  prUrl: null,
   archiveRows: 0,
 };
 
@@ -35,6 +49,7 @@ export interface UiState {
   screen: Screen;
   view: View;
   search: string;
+  typeFilter: TypeFilter;
   page: number;
   detail: Detail;
   match: Match;
@@ -53,12 +68,13 @@ export interface UiHandlers {
   setScreen: (s: Screen) => void;
   setView: (v: View) => void;
   setSearch: (v: string) => void;
+  setTypeFilter: (v: TypeFilter) => void;
   setPage: (p: number) => void;
   toast: (kind: ToastKind, text: string) => void;
   setCommitState: (s: CommitState | ((prev: CommitState) => CommitState)) => void;
   setPurgeText: (v: string) => void;
-  addAppeal: (applicantId: number, positionId: number, note: string | null) => Promise<boolean>;
-  removeAppeal: (applicantId: number, positionId: number) => Promise<boolean>;
+  addPreallocation: (applicantId: number, positionId: number, note: string | null) => Promise<boolean>;
+  removePreallocation: (applicantId: number, positionId: number) => Promise<boolean>;
   applySnapshot: (snap: Snapshot) => void;
 }
 
@@ -70,6 +86,7 @@ function App() {
   const [screen, setScreenState] = useState<Screen>("alloc");
   const [view, setViewState] = useState<View>("position");
   const [search, setSearchState] = useState("");
+  const [typeFilter, setTypeFilterState] = useState<TypeFilter>("all");
   const [page, setPage] = useState(0);
   const [detail, setDetail] = useState<Detail>(null);
   const [match, setMatch] = useState<Match>(null);
@@ -79,11 +96,44 @@ function App() {
   const [purgeText, setPurgeText] = useState("");
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
+  // Connection state: null until credentials are supplied (DATABASE_URL may
+  // seed it backend-side, discovered by the connection_info query on mount).
+  const [connLoaded, setConnLoaded] = useState(false);
+  const [connInfo, setConnInfo] = useState<string | null>(null);
+  const [connBusy, setConnBusy] = useState(false);
+  const [connError, setConnError] = useState<string | null>(null);
+  const [changingConn, setChangingConn] = useState(false);
+
+  // Updates: version for the sidebar, a pending release for the modal.
+  const [version, setVersion] = useState<string | null>(null);
+  const [pendingUpdate, setPendingUpdate] = useState<PendingUpdate | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [installingUpdate, setInstallingUpdate] = useState(false);
+
   const idx = useMemo(() => (snapshot ? buildIndexes(snapshot) : null), [snapshot]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  useEffect(() => {
+    api
+      .connectionInfo()
+      .then((info) => setConnInfo(info))
+      .catch(() => setConnInfo(null))
+      .finally(() => setConnLoaded(true));
+  }, []);
+
+  // Launch check: silent on failure (offline, no release yet) so a bad network
+  // never blocks the console. The manual check in the sidebar does report.
+  useEffect(() => {
+    appVersion()
+      .then(setVersion)
+      .catch(() => setVersion(null));
+    checkForUpdate()
+      .then(setPendingUpdate)
+      .catch(() => {});
+  }, []);
 
   const toast = (kind: ToastKind, text: string) => {
     toastSeq += 1;
@@ -131,15 +181,15 @@ function App() {
     }
   };
 
-  // Appeal changes invalidate the run server-side (the snapshot comes back
-  // with run: null), so the review stepper resets alongside it.
-  const addAppeal = async (applicantId: number, positionId: number, note: string | null) => {
+  // Preallocation changes invalidate the run server-side (the snapshot comes
+  // back with run: null), so the review stepper resets alongside it.
+  const addPreallocation = async (applicantId: number, positionId: number, note: string | null) => {
     try {
-      const snap = await api.addAppeal(applicantId, positionId, note);
+      const snap = await api.addPreallocation(applicantId, positionId, note);
       setSnapshot(snap);
       setCommitState(initialCommitState);
       setPurgeText("");
-      toast("success", "Appeal granted. Re-run matching to apply it.");
+      toast("success", "Preallocation granted. Re-run matching to apply it.");
       return true;
     } catch (e) {
       toast("error", errorMessage(e));
@@ -147,23 +197,88 @@ function App() {
     }
   };
 
-  const removeAppeal = async (applicantId: number, positionId: number) => {
+  const removePreallocation = async (applicantId: number, positionId: number) => {
     try {
-      const snap = await api.removeAppeal(applicantId, positionId);
+      const snap = await api.removePreallocation(applicantId, positionId);
       setSnapshot(snap);
       setCommitState(initialCommitState);
       setPurgeText("");
-      toast("success", "Appeal revoked. Re-run matching to apply it.");
+      toast("success", "Preallocation removed. Re-run matching to apply it.");
       return true;
     } catch (e) {
       toast("error", errorMessage(e));
       return false;
     }
+  };
+
+  // Verify credentials, adopt the new target, and pull its corpus. The old
+  // snapshot dies with the old database; a connect failure leaves everything
+  // untouched and surfaces inline on the form (toasts vanish too fast for
+  // credential errors).
+  const doConnect = async (projectRef: string, password: string, region: string) => {
+    if (connBusy) return;
+    setConnBusy(true);
+    setConnError(null);
+    try {
+      const label = await api.connect(projectRef, password, region.trim() ? region.trim() : null);
+      localStorage.setItem("cupid.projectRef", projectRef.trim());
+      localStorage.setItem("cupid.region", region.trim());
+      setConnInfo(label);
+      setChangingConn(false);
+      setSnapshot(null);
+      setCommitState(initialCommitState);
+      setPurgeText("");
+      setDetail(null);
+      setMatch(null);
+      toast("success", `Connected to ${label}.`);
+    } catch (e) {
+      setConnError(errorMessage(e));
+      return;
+    } finally {
+      setConnBusy(false);
+    }
+    await doSync();
   };
 
   // Replace the snapshot without touching stepper state: commit and purge
   // return fresh corpora mid-finalize, and the stepper must keep its place.
   const applySnapshot = (snap: Snapshot) => setSnapshot(snap);
+
+  const doCheckUpdate = async () => {
+    if (checkingUpdate) return;
+    if (!updatesSupported) {
+      toast("success", "Update checks are disabled in dev builds.");
+      return;
+    }
+    setCheckingUpdate(true);
+    try {
+      const found = await checkForUpdate();
+      if (found) setPendingUpdate(found);
+      else toast("success", version ? `Cupid ${version} is the latest release.` : "You are on the latest release.");
+    } catch (e) {
+      toast("error", `Update check failed: ${errorMessage(e)}`);
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
+
+  const doInstallUpdate = async () => {
+    if (!pendingUpdate || installingUpdate) return;
+    setInstallingUpdate(true);
+    try {
+      await installUpdate(pendingUpdate);
+    } catch (e) {
+      setInstallingUpdate(false);
+      setPendingUpdate(null);
+      toast("error", `Update failed: ${errorMessage(e)}`);
+    }
+  };
+
+  const doDismissUpdate = () => {
+    if (installingUpdate || !pendingUpdate) return;
+    void dismissUpdate(pendingUpdate);
+    setPendingUpdate(null);
+  };
 
   const openDetail = (type: "applicant" | "position", id: number) => {
     setDetail({ type, id });
@@ -186,6 +301,10 @@ function App() {
     setSearchState(v);
     setPage(0);
   };
+  const setTypeFilter = (v: TypeFilter) => {
+    setTypeFilterState(v);
+    setPage(0);
+  };
 
   const ui: UiState = {
     snapshot,
@@ -193,6 +312,7 @@ function App() {
     screen,
     view,
     search,
+    typeFilter,
     page,
     detail,
     match,
@@ -211,19 +331,36 @@ function App() {
     setScreen,
     setView,
     setSearch,
+    setTypeFilter,
     setPage,
     toast,
     setCommitState,
     setPurgeText,
-    addAppeal,
-    removeAppeal,
+    addPreallocation,
+    removePreallocation,
     applySnapshot,
   };
 
   if (!snapshot) {
     return (
       <>
-        <Splash syncing={syncing} onSync={doSync} />
+        <Splash
+          syncing={syncing}
+          onSync={doSync}
+          connLoaded={connLoaded}
+          connInfo={connInfo}
+          connBusy={connBusy}
+          connError={connError}
+          onConnect={doConnect}
+        />
+        {pendingUpdate ? (
+          <UpdatePrompt
+            pending={pendingUpdate}
+            installing={installingUpdate}
+            onInstall={() => void doInstallUpdate()}
+            onDismiss={doDismissUpdate}
+          />
+        ) : null}
         <Toasts toasts={toasts} onDismiss={dismissToast} />
       </>
     );
@@ -253,27 +390,177 @@ function App() {
         doRun={doRun}
       />
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
-        <Sidebar screen={screen} setScreen={setScreen} hasRun={snapshot.run !== null} />
+        <Sidebar
+          screen={screen}
+          setScreen={setScreen}
+          hasRun={snapshot.run !== null}
+          connInfo={connInfo}
+          onChangeDb={() => {
+            setConnError(null);
+            setChangingConn(true);
+          }}
+          version={version}
+          checkingUpdate={checkingUpdate}
+          onCheckUpdate={() => void doCheckUpdate()}
+        />
         <main style={{ flex: 1, minWidth: 0, overflow: "auto" }}>
           {detail ? (
             <DetailPage ui={ui} handlers={handlers} onBack={() => setDetail(null)} />
           ) : screen === "alloc" ? (
             <Allocations ui={ui} handlers={handlers} />
-          ) : screen === "appeals" ? (
-            <Appeals ui={ui} handlers={handlers} />
+          ) : screen === "prealloc" ? (
+            <PreallocationsWrapper ui={ui} handlers={handlers} />
           ) : (
             <Review ui={ui} handlers={handlers} />
           )}
         </main>
         {match ? <EventSidebar ui={ui} handlers={handlers} onClose={() => setMatch(null)} /> : null}
       </div>
+      {changingConn ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 60,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "rgba(0,0,0,0.4)",
+          }}
+        >
+          <div
+            style={{
+              width: 400,
+              padding: 20,
+              borderRadius: 12,
+              background: "var(--token-color-surface-primary)",
+              boxShadow: "var(--token-elevation-high-box-shadow)",
+            }}
+          >
+            <div style={{ fontSize: 15, fontWeight: 700, color: "var(--token-color-foreground-strong)", marginBottom: 4 }}>
+              Switch database
+            </div>
+            <div style={{ fontSize: 12, color: "var(--token-color-foreground-faint)", marginBottom: 14 }}>
+              Currently {connInfo ?? "not connected"}. Connecting drops the loaded corpus and syncs the new project.
+            </div>
+            <ConnectForm
+              busy={connBusy}
+              error={connError}
+              onConnect={doConnect}
+              onCancel={() => {
+                setChangingConn(false);
+                setConnError(null);
+              }}
+            />
+          </div>
+        </div>
+      ) : null}
+      {pendingUpdate ? (
+        <UpdatePrompt
+          pending={pendingUpdate}
+          installing={installingUpdate}
+          onInstall={() => void doInstallUpdate()}
+          onDismiss={doDismissUpdate}
+        />
+      ) : null}
       <Toasts toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }
 
+// ---- Connection form -------------------------------------------------
+function ConnectForm({
+  busy,
+  error,
+  onConnect,
+  onCancel,
+}: {
+  busy: boolean;
+  error: string | null;
+  onConnect: (projectRef: string, password: string, region: string) => void;
+  onCancel?: () => void;
+}) {
+  // Project ref and region persist across launches; the password never does.
+  const [projectRef, setProjectRef] = useState(() => localStorage.getItem("cupid.projectRef") ?? "");
+  const [password, setPassword] = useState("");
+  const [region, setRegion] = useState(() => localStorage.getItem("cupid.region") ?? "");
+  const ready = projectRef.trim().length > 0 && password.length > 0 && !busy;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%", textAlign: "left" }}>
+      <TextInput
+        label="Supabase project ref"
+        placeholder="e.g. abcdefghijklmnopqrst"
+        value={projectRef}
+        onChange={(e) => setProjectRef(e.target.value)}
+      />
+      <TextInput
+        label="Database password"
+        placeholder="Postgres password for the project"
+        type="password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+      />
+      <TextInput
+        label="Region (needed on networks without IPv6)"
+        placeholder="e.g. ap-southeast-1 — uses the session pooler"
+        value={region}
+        onChange={(e) => setRegion(e.target.value)}
+      />
+      {error ? (
+        <div
+          style={{
+            padding: "8px 11px",
+            borderRadius: 7,
+            fontSize: 12,
+            background: "rgba(220,38,38,0.10)",
+            border: "1px solid rgba(220,38,38,0.35)",
+            color: "var(--token-color-foreground-critical-on-surface)",
+            overflowWrap: "anywhere",
+          }}
+        >
+          {error}
+        </div>
+      ) : null}
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 2 }}>
+        {onCancel ? (
+          <Button color="ghost" onClick={onCancel}>
+            Cancel
+          </Button>
+        ) : null}
+        <Button
+          color="primary"
+          icon="download"
+          busy={busy}
+          disabled={!ready}
+          onClick={() => onConnect(projectRef, password, region)}
+        >
+          {busy ? "Connecting…" : "Connect"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 // ---- Splash / empty state --------------------------------------------
-function Splash({ syncing, onSync }: { syncing: boolean; onSync: () => void }) {
+function Splash({
+  syncing,
+  onSync,
+  connLoaded,
+  connInfo,
+  connBusy,
+  connError,
+  onConnect,
+}: {
+  syncing: boolean;
+  onSync: () => void;
+  connLoaded: boolean;
+  connInfo: string | null;
+  connBusy: boolean;
+  connError: string | null;
+  onConnect: (projectRef: string, password: string, region: string) => void;
+}) {
+  const [showForm, setShowForm] = useState(false);
+  const needsForm = connLoaded && (!connInfo || showForm);
   return (
     <div
       style={{
@@ -304,7 +591,7 @@ function Splash({ syncing, onSync }: { syncing: boolean; onSync: () => void }) {
       >
         <Icon name="heart" size={24} color="#fff" />
       </div>
-      {syncing ? (
+      {!connLoaded ? null : syncing ? (
         <>
           <div style={{ fontSize: 15, fontWeight: 700, color: "var(--token-color-foreground-strong)" }}>
             Syncing&hellip;
@@ -321,17 +608,49 @@ function Splash({ syncing, onSync }: { syncing: boolean; onSync: () => void }) {
             }}
           />
         </>
+      ) : needsForm ? (
+        <>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "var(--token-color-foreground-strong)" }}>
+            Connect to your database
+          </div>
+          <div style={{ fontSize: 13, maxWidth: 340, textAlign: "center" }}>
+            Enter the Supabase project ref and database password. Direct connections resolve over IPv6 only, so
+            on any other network add the project's region to route through the session pooler.
+          </div>
+          <div style={{ width: 340 }}>
+            <ConnectForm
+              busy={connBusy}
+              error={connError}
+              onConnect={onConnect}
+              onCancel={connInfo ? () => setShowForm(false) : undefined}
+            />
+          </div>
+        </>
       ) : (
         <>
           <div style={{ fontSize: 15, fontWeight: 700, color: "var(--token-color-foreground-strong)" }}>
             Sync to load the corpus
           </div>
-          <div style={{ fontSize: 13, maxWidth: 320, textAlign: "center" }}>
-            Cupid has no cached data yet. Sync with the database to pull applicants, positions, and appointments.
+          <div style={{ fontSize: 13, maxWidth: 340, textAlign: "center" }}>
+            Connected to <strong>{connInfo}</strong>. Sync to pull applicants, positions, and appointments.
           </div>
           <Button color="primary" icon="download" onClick={onSync}>
             Sync
           </Button>
+          <button
+            onClick={() => setShowForm(true)}
+            style={{
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
+              font: "inherit",
+              fontSize: 12,
+              color: "var(--token-color-foreground-faint)",
+              textDecoration: "underline",
+            }}
+          >
+            Use a different database
+          </button>
         </>
       )}
     </div>
@@ -500,14 +819,24 @@ function Sidebar({
   screen,
   setScreen,
   hasRun,
+  connInfo,
+  onChangeDb,
+  version,
+  checkingUpdate,
+  onCheckUpdate,
 }: {
   screen: Screen;
   setScreen: (s: Screen) => void;
   hasRun: boolean;
+  connInfo: string | null;
+  onChangeDb: () => void;
+  version: string | null;
+  checkingUpdate: boolean;
+  onCheckUpdate: () => void;
 }) {
   const items: { id: Screen; label: string; icon: string }[] = [
     { id: "alloc", label: "Allocations", icon: "layers" },
-    { id: "appeals", label: "Appeals", icon: "tag" },
+    { id: "prealloc", label: "Preallocations", icon: "tag" },
     { id: "review", label: "Review & commit", icon: "lock" },
   ];
   return (
@@ -586,9 +915,64 @@ function Sidebar({
             v={hasRun ? "Fresh" : "None"}
             c={hasRun ? "var(--token-color-foreground-success)" : "var(--token-color-foreground-faint)"}
           />
-          <SLine k="Source" v="Live" c="var(--token-color-foreground-success)" />
+          <div
+            title={connInfo ?? undefined}
+            style={{
+              color: "var(--token-color-foreground-faint)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {connInfo ?? "Not connected"}
+          </div>
+          <button
+            onClick={onChangeDb}
+            style={{
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
+              font: "inherit",
+              fontSize: 11.5,
+              fontWeight: 600,
+              color: "#DB2A63",
+              padding: 0,
+              textAlign: "left",
+            }}
+          >
+            Switch database…
+          </button>
         </div>
       </Card>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+          padding: "10px 4px 2px",
+          fontSize: 11,
+          color: "var(--token-color-foreground-faint)",
+        }}
+      >
+        <span>v{version ?? "—"}</span>
+        <button
+          onClick={onCheckUpdate}
+          disabled={checkingUpdate}
+          style={{
+            border: "none",
+            background: "transparent",
+            cursor: checkingUpdate ? "default" : "pointer",
+            font: "inherit",
+            fontSize: 11,
+            fontWeight: 600,
+            color: checkingUpdate ? "var(--token-color-foreground-faint)" : "#DB2A63",
+            padding: 0,
+          }}
+        >
+          {checkingUpdate ? "Checking…" : "Check for updates"}
+        </button>
+      </div>
     </nav>
   );
 }
@@ -614,14 +998,14 @@ function SLine({ k, v, c }: { k: string; v: string; c: string }) {
 }
 
 // ---- Screens (placeholders; Tasks 14-16 replace the rest) ------------------
-function Appeals({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
+function PreallocationsWrapper({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
   if (!ui.snapshot || !ui.idx) return null;
   return (
-    <AppealsScreen
+    <PreallocationsScreen
       snapshot={ui.snapshot}
       idx={ui.idx}
-      onAdd={handlers.addAppeal}
-      onRemove={handlers.removeAppeal}
+      onAdd={handlers.addPreallocation}
+      onRemove={handlers.removePreallocation}
       onOpenMatch={handlers.openMatch}
       toast={handlers.toast}
     />
@@ -636,9 +1020,11 @@ function Allocations({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
       idx={ui.idx}
       view={ui.view}
       search={ui.search}
+      typeFilter={ui.typeFilter}
       page={ui.page}
       onSetView={handlers.setView}
       onSetSearch={handlers.setSearch}
+      onSetTypeFilter={handlers.setTypeFilter}
       onSetPage={handlers.setPage}
       onOpenDetail={handlers.openDetail}
       onOpenMatch={handlers.openMatch}

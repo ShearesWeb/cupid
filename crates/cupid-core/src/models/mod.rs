@@ -12,12 +12,14 @@ mod cca;
 mod ledger;
 mod pool;
 mod position;
+mod preallocation;
 
 pub use allocation::{Algorithm, Allocation, Event, EventKind, MatchResult, RejectReason};
 pub use applicant::{Applicant, ApplicantIdx};
 pub use appointment::{Appointment, Appointments};
-pub use capacity::{Appeals, CapacityStore};
+pub use capacity::{CapacityStore, HeldCounts};
 pub use cca::{Cca, CcaIdx};
 pub use ledger::Ledger;
 pub use pool::{Pool, Roster};
 pub use position::{Position, PositionIdx, PositionType};
+pub use preallocation::Preallocations;

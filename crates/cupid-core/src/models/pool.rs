@@ -13,6 +13,10 @@ pub struct Pool {
     positions: HashMap<PositionIdx, Position>,
     ccas: HashMap<CcaIdx, Cca>,
     appointments: Appointments,
+    /// Non-resident appointments to positions OUTSIDE the market (e.g.
+    /// `member` roles). They occupy the holder's one-per-CCA slot without
+    /// occupying any seat cupid allocates.
+    external_occupancy: Vec<(ApplicantIdx, CcaIdx)>,
 }
 
 impl Pool {
@@ -28,6 +32,7 @@ impl Pool {
             positions,
             ccas,
             appointments: Appointments::new(),
+            external_occupancy: Vec::new(),
         }
     }
 
@@ -35,6 +40,18 @@ impl Pool {
     pub fn with_appointments(mut self, appointments: Appointments) -> Self {
         self.appointments = appointments;
         self
+    }
+
+    /// Builder: attach CCA occupancy from non-resident appointments outside
+    /// the market (set once during corpus assembly).
+    pub fn with_external_occupancy(mut self, occupancy: Vec<(ApplicantIdx, CcaIdx)>) -> Self {
+        self.external_occupancy = occupancy;
+        self
+    }
+
+    /// CCA slots occupied by appointments outside the market.
+    pub fn external_occupancy(&self) -> &[(ApplicantIdx, CcaIdx)] {
+        &self.external_occupancy
     }
 
     pub fn applicants(&self) -> impl Iterator<Item = &Applicant> + '_ {

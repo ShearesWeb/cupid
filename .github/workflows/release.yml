@@ -1,0 +1,145 @@
+name: Release
+
+# Every push to main ships. The version is derived from the commit subject,
+# committed back, and published as a single stable GitHub release that the
+# in-app updater reads from /releases/latest/download/latest.json.
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    # The bump commit is pushed with GITHUB_TOKEN, which does not re-trigger
+    # workflows. This guard is the safety net if that ever changes.
+    if: "!startsWith(github.event.head_commit.message, 'chore: bump version')"
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.compute.outputs.version }}
+      sha: ${{ steps.commit.outputs.sha }}
+      notes: ${{ steps.notes.outputs.notes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Compute next version
+        id: compute
+        run: |
+          CURRENT=$(jq -r '.version' src-tauri/tauri.conf.json)
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          MSG=$(git log -1 --pretty=%B)
+          if echo "$MSG" | grep -qE '^[a-z]+(\(.+\))?!:|BREAKING CHANGE'; then
+            MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0
+          elif echo "$MSG" | grep -qE '^feat(\(.+\))?:'; then
+            MINOR=$((MINOR + 1)); PATCH=0
+          else
+            PATCH=$((PATCH + 1))
+          fi
+          echo "version=${MAJOR}.${MINOR}.${PATCH}" >> "$GITHUB_OUTPUT"
+          echo "Bumping ${CURRENT} → ${MAJOR}.${MINOR}.${PATCH}"
+
+      - name: Collect release notes
+        id: notes
+        run: |
+          LAST=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)
+          RANGE=${LAST:+${LAST}..HEAD}
+          {
+            echo 'notes<<CUPID_NOTES_EOF'
+            git log ${RANGE:-HEAD} --no-merges --pretty='- %s' \
+              | grep -v '^- chore: bump version' \
+              || echo '- Maintenance release.'
+            echo 'CUPID_NOTES_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      # tauri.conf.json is the source of truth; Cargo.toml and the workspace
+      # lockfile follow it. ui/package.json is never versioned — the UI reads
+      # the running version through getVersion().
+      - name: Sync version into project files
+        run: |
+          V=${{ steps.compute.outputs.version }}
+          jq --arg v "$V" '.version = $v' src-tauri/tauri.conf.json > tmp.json
+          mv tmp.json src-tauri/tauri.conf.json
+          sed -i "0,/^version = .*/s//version = \"$V\"/" src-tauri/Cargo.toml
+          cargo update --workspace
+
+      - name: Commit version bump
+        id: commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add src-tauri/tauri.conf.json src-tauri/Cargo.toml Cargo.lock
+          git commit -m "chore: bump version to ${{ steps.compute.outputs.version }}"
+          git push
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: bump
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+          - platform: windows-latest
+            args: '--bundles nsis'
+          - platform: ubuntu-latest
+            args: '--bundles appimage,deb'
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump.outputs.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            ui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux system deps
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev \
+            libssl-dev patchelf file
+
+      # postinstall pulls the ui workspace in; tauri-action finds the root
+      # package.json and drives the build through its `tauri` script.
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # AppImage bundling on recent Ubuntu images fails when the bundler
+          # strips the binary; ignored on the other platforms.
+          NO_STRIP: 'true'
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v${{ needs.bump.outputs.version }}
+          releaseName: Cupid v${{ needs.bump.outputs.version }}
+          releaseBody: ${{ needs.bump.outputs.notes }}
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          args: ${{ matrix.args }}

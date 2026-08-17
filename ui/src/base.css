@@ -4,6 +4,10 @@ html, body { margin: 0; padding: 0; height: 100%; }
    over the solid page-primary base, never over the UA's white default. */
 html { background: var(--token-color-page-primary); }
 body { font-family: var(--token-typography-font-stack-display); background: var(--token-color-page-faint); -webkit-font-smoothing: antialiased; }
+/* Native-app feel: page text cannot be selected or copied. Editable fields
+   opt back in; the merge-request URL opts in via inline user-select: all. */
+body { -webkit-user-select: none; user-select: none; }
+input, textarea { -webkit-user-select: text; user-select: text; }
 ::-webkit-scrollbar { width: 11px; height: 11px; }
 ::-webkit-scrollbar-thumb { background: var(--token-color-border-strong); border-radius: 8px; border: 3px solid transparent; background-clip: padding-box; }
 ::-webkit-scrollbar-track { background: transparent; }

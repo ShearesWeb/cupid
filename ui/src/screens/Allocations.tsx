@@ -1,24 +1,34 @@
 // Allocations.tsx — task-13: position/applicant allocation views.
 // Ports reference/cca-console-design.html: renderAllocations (319-328), positionView (330-340),
-// positionCard/capacityBar/personChip (393-424), applicantView/applicantRow (426-454).
+// positionCard/capacityBar (393-424), applicantView/applicantRow (426-454).
 // All displayed values are looked up from snapshot/idx — this screen never recomputes statuses;
-// the Rust backend already orders seated lists existing -> allocated -> appealed.
-import { Card, Badge, Avatar, Icon, TextInput } from "../components/index.ts";
+// the Rust backend already orders seated lists existing -> allocated -> preallocated.
+import { Card, Avatar, ChairCoverage, ChoiceCoverage, Icon, PositionTypeBadge, TextInput } from "../components/index.ts";
 import { statusStyle } from "../components/statusStyle.ts";
 import { pk, type Indexes } from "../lib/indexes.ts";
-import type { ApplicantView, PositionView, SeatView, Snapshot, Status } from "../lib/types.ts";
+import type { ApplicantView, PositionType, PositionView, SeatView, Snapshot, Status } from "../lib/types.ts";
 import { EmptyState, Legend, Pager } from "./shared.tsx";
 
 type View = "position" | "applicant";
+type TypeFilter = "all" | PositionType;
+
+const TYPE_CHIPS: [TypeFilter, string][] = [
+  ["all", "All"],
+  ["main", "Main"],
+  ["block", "Block"],
+  ["sub", "Sub"],
+];
 
 export interface AllocationsProps {
   snapshot: Snapshot;
   idx: Indexes;
   view: View;
   search: string;
+  typeFilter: TypeFilter;
   page: number;
   onSetView: (v: View) => void;
   onSetSearch: (v: string) => void;
+  onSetTypeFilter: (v: TypeFilter) => void;
   onSetPage: (p: number) => void;
   onOpenDetail: (type: "applicant" | "position", id: number) => void;
   onOpenMatch: (aid: number, pid: number) => void;
@@ -31,7 +41,7 @@ export interface AllocationsProps {
 // has no run-prompt state of its own (position/applicant cards render existing seats even
 // pre-run) — they're unused here on purpose.
 export function Allocations(props: AllocationsProps) {
-  const { snapshot, idx, view, search, page, onSetView, onSetSearch, onSetPage, onOpenDetail, onOpenMatch, hasRun } = props;
+  const { snapshot, idx, view, search, typeFilter, page, onSetView, onSetSearch, onSetTypeFilter, onSetPage, onOpenDetail, onOpenMatch, hasRun } = props;
   return (
     <div style={{ padding: "24px 28px 48px", maxWidth: 1120, margin: "0 auto" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, marginBottom: 12, flexWrap: "wrap" }}>
@@ -45,11 +55,18 @@ export function Allocations(props: AllocationsProps) {
           />
         </div>
       </div>
+      {view === "position" ? (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 12 }}>
+          {TYPE_CHIPS.map(([value, label]) => (
+            <TypeChip key={value} label={label} active={typeFilter === value} onClick={() => onSetTypeFilter(value)} />
+          ))}
+        </div>
+      ) : null}
       <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px 16px", marginBottom: 16 }}>
-        <Legend hasRun={hasRun} />
+        <Legend />
       </div>
       {view === "position" ? (
-        <PositionView snapshot={snapshot} idx={idx} search={search} page={page} onSetPage={onSetPage} onOpenDetail={onOpenDetail} onOpenMatch={onOpenMatch} />
+        <PositionView snapshot={snapshot} idx={idx} search={search} typeFilter={typeFilter} page={page} onSetPage={onSetPage} onOpenDetail={onOpenDetail} />
       ) : (
         <ApplicantView snapshot={snapshot} idx={idx} search={search} page={page} hasRun={hasRun} onSetPage={onSetPage} onOpenDetail={onOpenDetail} onOpenMatch={onOpenMatch} />
       )}
@@ -90,32 +107,55 @@ function SegmentToggle({ view, onSetView }: { view: View; onSetView: (v: View) =
   );
 }
 
+function TypeChip({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        border: "1px solid " + (active ? "var(--token-color-border-action)" : "var(--token-color-border-faint)"),
+        background: active ? "var(--token-color-surface-action)" : "transparent",
+        color: active ? "var(--token-color-foreground-action)" : "var(--token-color-foreground-faint)",
+        cursor: "pointer",
+        font: "inherit",
+        fontSize: 12,
+        fontWeight: 600,
+        padding: "4px 11px",
+        borderRadius: 999,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
 // ---- position view ---------------------------------------------------
 function PositionView({
   snapshot,
   idx,
   search,
+  typeFilter,
   page,
   onSetPage,
   onOpenDetail,
-  onOpenMatch,
 }: {
   snapshot: Snapshot;
   idx: Indexes;
   search: string;
+  typeFilter: TypeFilter;
   page: number;
   onSetPage: (p: number) => void;
   onOpenDetail: (type: "applicant" | "position", id: number) => void;
-  onOpenMatch: (aid: number, pid: number) => void;
 }) {
   const q = search.trim().toLowerCase();
-  const positions = snapshot.positions.filter(
-    (p) => !q || p.name.toLowerCase().includes(q) || (idx.ccaById.get(p.ccaId)?.name ?? "").toLowerCase().includes(q),
-  );
+  const positions = snapshot.positions
+    .filter((p) => typeFilter === "all" || p.type === typeFilter)
+    .filter(
+      (p) => !q || p.name.toLowerCase().includes(q) || (idx.ccaById.get(p.ccaId)?.name ?? "").toLowerCase().includes(q),
+    );
   if (positions.length === 0) {
-    return <EmptyState title="No matching positions" sub="Try a different CCA or position name." />;
+    return <EmptyState title="No matching positions" sub="Try a different type, CCA or position name." />;
   }
-  const per = 6;
+  const per = 9;
   const pages = Math.ceil(positions.length / per);
   const clamped = Math.min(page, pages - 1);
   const shown = positions.slice(clamped * per, clamped * per + per);
@@ -123,7 +163,7 @@ function PositionView({
     <div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(330px, 1fr))", gap: 12 }}>
         {shown.map((p) => (
-          <PositionCard key={p.id} pos={p} idx={idx} onOpenDetail={onOpenDetail} onOpenMatch={onOpenMatch} />
+          <PositionCard key={p.id} pos={p} idx={idx} onOpenDetail={onOpenDetail} />
         ))}
       </div>
       <Pager total={positions.length} perPage={per} page={page} onSetPage={onSetPage} />
@@ -135,12 +175,10 @@ function PositionCard({
   pos,
   idx,
   onOpenDetail,
-  onOpenMatch,
 }: {
   pos: PositionView;
   idx: Indexes;
   onOpenDetail: (type: "applicant" | "position", id: number) => void;
-  onOpenMatch: (aid: number, pid: number) => void;
 }) {
   const cca = idx.ccaById.get(pos.ccaId);
   const seated = idx.seatsByPos.get(pos.id) ?? [];
@@ -179,7 +217,7 @@ function PositionCard({
             >
               {pos.name}
             </span>
-            <Badge color={pos.type === "main" ? "highlight" : "neutral"} text={pos.type} />
+            <PositionTypeBadge type={pos.type} />
           </div>
         </div>
         <span
@@ -198,50 +236,14 @@ function PositionCard({
         </span>
       </button>
       <CapacityBar capacity={pos.capacity} seated={seated} />
-      <div style={{ padding: "8px 12px 12px", display: "flex", flexWrap: "wrap", gap: 6, minHeight: 42, alignItems: "center" }}>
-        {seated.length ? (
-          <>
-            {seated.slice(0, 4).map((s) => (
-              <PersonChip
-                key={s.applicantId + s.status}
-                applicantId={s.applicantId}
-                status={s.status}
-                positionId={pos.id}
-                name={idx.appById.get(s.applicantId)?.name ?? ""}
-                onOpenMatch={onOpenMatch}
-              />
-            ))}
-            {seated.length > 4 ? (
-              <button
-                onClick={() => onOpenDetail("position", pos.id)}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  padding: "4px 10px",
-                  borderRadius: 7,
-                  border: "1px dashed var(--token-color-border-strong)",
-                  background: "transparent",
-                  color: "var(--token-color-foreground-faint)",
-                  cursor: "pointer",
-                  font: "inherit",
-                  fontSize: 12.5,
-                  fontWeight: 600,
-                }}
-              >
-                +{seated.length - 4} more
-              </button>
-            ) : null}
-          </>
-        ) : (
-          <span style={{ fontSize: 12, color: "var(--token-color-foreground-critical-on-surface)", fontStyle: "italic", padding: "4px 2px" }}>
-            No one allocated yet
-          </span>
-        )}
+      <div style={{ padding: "9px 15px 12px" }}>
+        <ChairCoverage ranked={pos.chairRank.length} openSeats={Math.max(pos.capacity - filled, 0)} />
       </div>
     </Card>
   );
 }
 
+// One segment per seat, coloured by who holds it and grey for the vacancies.
 function CapacityBar({ capacity, seated }: { capacity: number; seated: SeatView[] }) {
   const segs = seated.map((s) => statusStyle(s.status).dot);
   while (segs.length < capacity) segs.push("var(--token-color-surface-strong)");
@@ -251,47 +253,6 @@ function CapacityBar({ capacity, seated }: { capacity: number; seated: SeatView[
         <span key={i} style={{ flex: 1, height: 5, borderRadius: 3, background: c }} />
       ))}
     </div>
-  );
-}
-
-function PersonChip({
-  applicantId,
-  status,
-  positionId,
-  name,
-  onOpenMatch,
-}: {
-  applicantId: number;
-  status: Status;
-  positionId: number;
-  name: string;
-  onOpenMatch: (aid: number, pid: number) => void;
-}) {
-  const st = statusStyle(status);
-  return (
-    <button
-      onClick={(e) => {
-        e.stopPropagation();
-        onOpenMatch(applicantId, positionId);
-      }}
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-        padding: "4px 10px 4px 8px",
-        borderRadius: 7,
-        border: "1px solid " + st.bd,
-        background: st.bg,
-        color: st.fg,
-        cursor: "pointer",
-        font: "inherit",
-        fontSize: 12.5,
-        fontWeight: 600,
-      }}
-    >
-      <span style={{ width: 6, height: 6, borderRadius: "50%", background: st.dot }} />
-      {name}
-    </button>
   );
 }
 
@@ -363,9 +324,17 @@ function ApplicantRow({
         seats.push({ pid: o.positionId, status: "allocated" });
       }
     }
-    for (const o of idx.appealAllocations) {
+    for (const o of idx.preallocatedAllocations) {
       if (o.applicantId === a.id && !idx.committedSet.has(pk(o.applicantId, o.positionId))) {
-        seats.push({ pid: o.positionId, status: "appealed" });
+        seats.push({ pid: o.positionId, status: "preallocated" });
+      }
+    }
+  } else {
+    // Pre-run the preallocation is the claim on the seat, exactly as the
+    // position cards show it.
+    for (const p of snapshot.preallocations) {
+      if (p.applicantId === a.id && !idx.committedSet.has(pk(a.id, p.positionId))) {
+        seats.push({ pid: p.positionId, status: "preallocated" });
       }
     }
   }
@@ -446,6 +415,9 @@ function ApplicantRow({
             {hasRun ? "No allocation" : "—"}
           </span>
         )}
+      </div>
+      <div style={{ width: 200, flexShrink: 0 }}>
+        <ChoiceCoverage ranked={a.prefs.length} />
       </div>
       <button onClick={() => onOpenDetail("applicant", a.id)} style={{ border: "none", background: "transparent", cursor: "pointer", padding: 2, display: "flex" }}>
         <Icon name="chevron-right" size={16} color="var(--token-color-foreground-faint)" />

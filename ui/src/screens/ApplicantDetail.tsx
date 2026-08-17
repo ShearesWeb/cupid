@@ -1,10 +1,10 @@
 // ApplicantDetail.tsx — task-14: applicant detail page.
 // Ports reference/cca-console-design.html applicantDetail (556-574). All displayed values are
 // looked up from snapshot/idx — this screen never recomputes statuses or quota rules.
-import { Avatar, MatchRow, QuotaWidget } from "../components/index.ts";
+import { Avatar, ChoiceCoverage, MatchRow, QuotaWidget } from "../components/index.ts";
 import { pk, type Indexes } from "../lib/indexes.ts";
 import type { Snapshot } from "../lib/types.ts";
-import { DetailHero, Section } from "./shared.tsx";
+import { DetailHero, OutcomeLegend, Section } from "./shared.tsx";
 
 export interface ApplicantDetailProps {
   aid: number;
@@ -27,7 +27,7 @@ export function ApplicantDetail({ aid, snapshot, idx, onOpenMatch }: ApplicantDe
 
   const existingPos = snapshot.committed.filter((c) => c.applicantId === aid).map((c) => c.positionId);
   const newPos = hasRun ? idx.newAllocations.filter((o) => o.applicantId === aid).map((o) => o.positionId) : [];
-  const myAppeals = snapshot.appeals.filter((ap) => ap.applicantId === aid);
+  const myPreallocations = snapshot.preallocations.filter((ap) => ap.applicantId === aid);
 
   return (
     <>
@@ -37,6 +37,9 @@ export function ApplicantDetail({ aid, snapshot, idx, onOpenMatch }: ApplicantDe
         title={a.name}
         right={quota ? <QuotaWidget quota={quota} hasRun={hasRun} /> : null}
       />
+      <div style={{ margin: "-8px 0 20px" }}>
+        <OutcomeLegend />
+      </div>
       <Section title="Existing appointments">
         {existingPos.length ? (
           <div style={{ display: "flex", flexDirection: "column" }}>
@@ -79,10 +82,10 @@ export function ApplicantDetail({ aid, snapshot, idx, onOpenMatch }: ApplicantDe
           )}
         </Section>
       ) : null}
-      {myAppeals.length ? (
-        <Section title="Appeals (quota-exempt)">
+      {myPreallocations.length ? (
+        <Section title="Preallocations">
           <div style={{ display: "flex", flexDirection: "column" }}>
-            {myAppeals.map((ap, k) => {
+            {myPreallocations.map((ap, k) => {
               const o = idx.outcomeByPair.get(pk(aid, ap.positionId));
               return (
                 <MatchRow
@@ -99,6 +102,9 @@ export function ApplicantDetail({ aid, snapshot, idx, onOpenMatch }: ApplicantDe
         </Section>
       ) : null}
       <Section title="Ranked preferences">
+        <div style={{ marginBottom: 10 }}>
+          <ChoiceCoverage ranked={a.prefs.length} />
+        </div>
         <div style={{ display: "flex", flexDirection: "column" }}>
           {a.prefs.map((pid, i) => {
             const o = idx.outcomeByPair.get(pk(aid, pid));
@@ -109,8 +115,7 @@ export function ApplicantDetail({ aid, snapshot, idx, onOpenMatch }: ApplicantDe
                 num={i + 1}
                 name={posLabel(pid)}
                 sub={hasRun ? (o?.detail ?? null) : null}
-                meta={cr ? `chair #${cr}` : "chair: unranked"}
-                metaColor={cr ? undefined : "var(--token-color-foreground-critical-on-surface)"}
+                meta={cr ? `chair #${cr}` : null}
                 status={o?.status ?? "neutral"}
                 statusLabel={o?.label ?? "—"}
                 onClick={() => onOpenMatch(aid, pid)}

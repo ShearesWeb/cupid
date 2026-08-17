@@ -1,5 +1,5 @@
 // types.ts — exact mirror of the Rust snapshot JSON
-export type Status = "existing" | "allocated" | "appealed" | "displaced" | "quota" | "noreturn" | "neutral";
+export type Status = "existing" | "allocated" | "preallocated" | "displaced" | "quota" | "noreturn" | "neutral";
 export type PositionType = "block" | "main" | "sub";
 
 export interface CcaView {
@@ -23,7 +23,7 @@ export interface ApplicantView {
   prefs: number[];
 }
 
-export interface AppealView {
+export interface PreallocationView {
   applicantId: number;
   positionId: number;
   note: string | null;
@@ -39,7 +39,6 @@ export interface QuotaView {
   main: number;
   block: number;
   sub: number;
-  appealed: number;
   canAddMain: boolean;
   canAddBlock: boolean;
   canAddSub: boolean;
@@ -67,7 +66,7 @@ export interface OutcomeView {
 export interface AssignmentView {
   applicantId: number;
   positionId: number;
-  kind: "allocated" | "appealed";
+  kind: "allocated" | "preallocated";
   chairRank: number | null;
   prefRank: number | null;
 }
@@ -99,16 +98,18 @@ export interface Snapshot {
   positions: PositionView[];
   applicants: ApplicantView[];
   committed: PairView[];
-  appeals: AppealView[];
+  preallocations: PreallocationView[];
   quota: QuotaView[];
   seats: SeatsView[];
   outcomes: OutcomeView[];
   run: RunView | null;
 }
 
-export interface CommitReceipt {
-  inserted: number;
-  snapshot: Snapshot;
+export interface ExportReceipt {
+  rows: number;
+  files: string[];
+  branch: string;
+  prUrl: string;
 }
 
 export interface PurgeReceipt {

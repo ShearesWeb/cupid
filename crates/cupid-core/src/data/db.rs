@@ -1,22 +1,28 @@
 use std::error::Error;
 
-use super::resolve::derive;
-use super::{appeals, appointments, chair_preferences, user_preferences};
-use crate::models::{Appeals, Pool};
+use super::conn::ConnSpec;
+use super::resolve::{derive, Records};
+use super::{appointments, chair_preferences, positions, user_preferences, users};
+use crate::models::Pool;
 
-/// Load the corpus and its appeals from the production database.
-pub fn load() -> Result<(Pool, Appeals, Vec<String>), Box<dyn Error>> {
-    let url = std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL must be set")?;
+/// Load the corpus from the database `spec` points at. Read-only: cupid's
+/// preallocations live in a local store (see `data::preallocations`), not in
+/// the database.
+pub fn load(spec: &ConnSpec) -> Result<Pool, Box<dyn Error>> {
+    let mut client = spec.connect()?;
 
-    let tls = postgres_native_tls::MakeTlsConnector::new(native_tls::TlsConnector::new()?);
-    let mut client = postgres::Client::connect(&url, tls)?;
-
+    let user_records = users::load(&mut client)?;
+    let position_records = positions::load(&mut client)?;
     let user_prefs = user_preferences::load(&mut client)?;
     let chair_prefs = chair_preferences::load(&mut client)?;
     let appts = appointments::load(&mut client)?;
-    let pool = derive(&user_prefs, &chair_prefs, &appts);
-    let (appeals, warnings) = appeals::load(&mut client, &pool)?;
-    Ok((pool, appeals, warnings))
+    Ok(derive(&Records {
+        users: &user_records,
+        positions: &position_records,
+        user_prefs: &user_prefs,
+        chair_prefs: &chair_prefs,
+        appointments: &appts,
+    }))
 }
 
 #[cfg(test)]
@@ -26,7 +32,8 @@ mod tests {
     #[test]
     #[ignore = "requires a live DATABASE_URL"]
     fn db_load_against_live_database() {
-        let (pool, _appeals, _warnings) = load().expect("load from DATABASE_URL");
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let pool = load(&ConnSpec::Url(url)).expect("load from DATABASE_URL");
         // Smoke check: a real run should produce a corpus we can match over.
         assert!(pool.positions().count() > 0, "expected some positions");
     }

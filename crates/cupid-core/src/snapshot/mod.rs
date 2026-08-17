@@ -5,8 +5,8 @@ use std::collections::{BTreeSet, HashMap};
 use serde::Serialize;
 
 use crate::models::{
-    Allocation, Appeals, ApplicantIdx, CapacityStore, Event, EventKind, MatchResult, Pool,
-    PositionIdx, PositionType, RejectReason,
+    Algorithm, Allocation, ApplicantIdx, CapacityStore, Event, EventKind, MatchResult, Pool,
+    PositionIdx, PositionType, Preallocations, RejectReason,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -14,7 +14,7 @@ use crate::models::{
 pub enum Status {
     Existing,
     Allocated,
-    Appealed,
+    Preallocated,
     Displaced,
     Quota,
     Noreturn,
@@ -25,13 +25,13 @@ pub enum Status {
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub synced_at: String,
-    /// Load-time anomalies (e.g. stale appeal rows) surfaced to the operator.
+    /// Load-time anomalies (e.g. stale preallocation rows) surfaced to the operator.
     pub warnings: Vec<String>,
     pub ccas: Vec<CcaView>,
     pub positions: Vec<PositionView>,
     pub applicants: Vec<ApplicantView>,
     pub committed: Vec<PairView>,
-    pub appeals: Vec<AppealView>,
+    pub preallocations: Vec<PreallocationView>,
     pub quota: Vec<QuotaView>,
     pub seats: Vec<SeatsView>,
     pub outcomes: Vec<OutcomeView>,
@@ -74,7 +74,7 @@ pub struct PairView {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AppealView {
+pub struct PreallocationView {
     pub applicant_id: i32,
     pub position_id: i32,
     pub note: Option<String>,
@@ -87,7 +87,6 @@ pub struct QuotaView {
     pub main: u8,
     pub block: u8,
     pub sub: u8,
-    pub appealed: u8,
     pub can_add_main: bool,
     pub can_add_block: bool,
     pub can_add_sub: bool,
@@ -140,7 +139,7 @@ pub struct AssignmentView {
 #[serde(rename_all = "kebab-case")]
 pub enum AssignmentKind {
     Allocated,
-    Appealed,
+    Preallocated,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -179,7 +178,7 @@ fn type_str(t: PositionType) -> &'static str {
 
 pub fn build(
     pool: &Pool,
-    appeals: &Appeals,
+    preallocations: &Preallocations,
     result: Option<&MatchResult>,
     synced_at: String,
     warnings: Vec<String>,
@@ -191,11 +190,11 @@ pub fn build(
         positions: build_positions(pool),
         applicants: build_applicants(pool),
         committed: build_pairs(pool.appointments().iter().map(|a| (a.applicant, a.position))),
-        appeals: build_appeals(appeals),
-        quota: build_quota(pool, appeals, result),
-        seats: build_seats(pool, appeals, result),
-        outcomes: build_outcomes(pool, appeals, result),
-        run: result.map(|r| build_run(pool, appeals, r)),
+        preallocations: build_preallocations(preallocations),
+        quota: build_quota(pool, result),
+        seats: build_seats(pool, preallocations, result),
+        outcomes: build_outcomes(pool, preallocations, result),
+        run: result.map(|r| build_run(pool, preallocations, r)),
     }
 }
 
@@ -241,13 +240,13 @@ fn build_applicants(pool: &Pool) -> Vec<ApplicantView> {
     views
 }
 
-fn build_appeals(appeals: &Appeals) -> Vec<AppealView> {
-    let mut views: Vec<AppealView> = appeals
+fn build_preallocations(preallocations: &Preallocations) -> Vec<PreallocationView> {
+    let mut views: Vec<PreallocationView> = preallocations
         .iter()
-        .map(|(a, p)| AppealView {
+        .map(|(a, p)| PreallocationView {
             applicant_id: a.0,
             position_id: p.0,
-            note: appeals.note(a, p).map(str::to_owned),
+            note: preallocations.note(a, p).map(str::to_owned),
         })
         .collect();
     views.sort_by_key(|v| (v.applicant_id, v.position_id));
@@ -265,16 +264,12 @@ fn build_pairs(pairs: impl Iterator<Item = (ApplicantIdx, PositionIdx)>) -> Vec<
     views
 }
 
-fn build_quota(pool: &Pool, appeals: &Appeals, result: Option<&MatchResult>) -> Vec<QuotaView> {
-    let mut store = CapacityStore::from_pool(pool, appeals);
+fn build_quota(pool: &Pool, result: Option<&MatchResult>) -> Vec<QuotaView> {
+    let mut store = CapacityStore::from_pool(pool);
     if let Some(result) = result {
         for alloc in result.all() {
             if let Some(position) = pool.position(alloc.position_id) {
-                store.grant(
-                    alloc.applicant_id,
-                    position.position_type,
-                    appeals.contains(alloc.applicant_id, alloc.position_id),
-                );
+                store.grant(alloc.applicant_id, position.position_type, position.cca.id);
             }
         }
     }
@@ -287,7 +282,6 @@ fn build_quota(pool: &Pool, appeals: &Appeals, result: Option<&MatchResult>) -> 
                 main: counts.maincomm,
                 block: counts.blockcomm,
                 sub: counts.subcomm,
-                appealed: counts.appealed,
                 can_add_main: counts.can_add(PositionType::MainComm),
                 can_add_block: counts.can_add(PositionType::BlockComm),
                 can_add_sub: counts.can_add(PositionType::SubComm),
@@ -299,14 +293,18 @@ fn build_quota(pool: &Pool, appeals: &Appeals, result: Option<&MatchResult>) -> 
     views
 }
 
-fn build_seats(pool: &Pool, appeals: &Appeals, result: Option<&MatchResult>) -> Vec<SeatsView> {
+fn build_seats(
+    pool: &Pool,
+    preallocations: &Preallocations,
+    result: Option<&MatchResult>,
+) -> Vec<SeatsView> {
     let mut positions: Vec<_> = pool.positions().collect();
     positions.sort_by_key(|p| p.id.0);
 
     positions
         .into_iter()
         .map(|p| {
-            // Ordering guarantee: existing -> allocated -> appealed.
+            // Ordering guarantee: existing -> allocated -> preallocated.
             let mut seated: Vec<SeatView> = pool
                 .appointments()
                 .holders(p.id)
@@ -319,10 +317,11 @@ fn build_seats(pool: &Pool, appeals: &Appeals, result: Option<&MatchResult>) -> 
 
             if let Some(result) = result {
                 let mut allocated = Vec::new();
-                let mut appealed = Vec::new();
+                let mut preallocated = Vec::new();
                 for alloc in result.for_position(p.id) {
-                    let status = if appeals.contains(alloc.applicant_id, alloc.position_id) {
-                        Status::Appealed
+                    let status = if preallocations.contains(alloc.applicant_id, alloc.position_id)
+                    {
+                        Status::Preallocated
                     } else {
                         Status::Allocated
                     };
@@ -331,12 +330,28 @@ fn build_seats(pool: &Pool, appeals: &Appeals, result: Option<&MatchResult>) -> 
                         status,
                     };
                     match status {
-                        Status::Appealed => appealed.push(view),
+                        Status::Preallocated => preallocated.push(view),
                         _ => allocated.push(view),
                     }
                 }
                 seated.extend(allocated);
-                seated.extend(appealed);
+                seated.extend(preallocated);
+            } else {
+                // Pre-run a preallocation is the only forward-looking claim on
+                // a seat, so it shares the bar with the existing appointments.
+                // Pairs already committed hold their seat as Existing above.
+                let held = pool.appointments().holders(p.id).to_vec();
+                let mut claimed: Vec<ApplicantIdx> = preallocations
+                    .iter()
+                    .filter(|&(_, position)| position == p.id)
+                    .map(|(applicant, _)| applicant)
+                    .filter(|applicant| !held.contains(applicant))
+                    .collect();
+                claimed.sort();
+                seated.extend(claimed.into_iter().map(|applicant| SeatView {
+                    applicant_id: applicant.0,
+                    status: Status::Preallocated,
+                }));
             }
 
             SeatsView {
@@ -359,12 +374,14 @@ fn rank_text(rank: Option<usize>) -> String {
 }
 
 /// Fixed detail text for a rejection reason (shared by events and outcomes).
+// Detail strings render next to a pill or title that already names the
+// outcome, so they carry only what the label cannot: who, how many, when.
 fn reject_detail(reason: RejectReason) -> &'static str {
     match reason {
         RejectReason::NotRankedByChair => "Chair did not rank this applicant.",
-        RejectReason::RoleCapacityFull => "Position full at this point in the run.",
+        RejectReason::RoleCapacityFull => "All seats were taken at that point in the run.",
         RejectReason::ApplicantCapacityFull => {
-            "Quota full at this point in the run: another seat here would exceed the personal quota."
+            "Another seat here would exceed their personal quota at that point in the run."
         }
         RejectReason::DisplacedByHigherRank => "Chair preferred others who took the seats.",
     }
@@ -373,7 +390,7 @@ fn reject_detail(reason: RejectReason) -> &'static str {
 /// Detail text for a displacement (shared by events and outcomes).
 fn displaced_detail(pool: &Pool, by: ApplicantIdx, by_chair_rank: Option<usize>) -> String {
     format!(
-        "Displaced by {} (chair-rank {}).",
+        "By {} (chair-rank {}).",
         name_of(pool, by),
         rank_text(by_chair_rank)
     )
@@ -381,6 +398,10 @@ fn displaced_detail(pool: &Pool, by: ApplicantIdx, by_chair_rank: Option<usize>)
 
 /// Detail text for a successful allocation.
 fn accept_detail(alloc: &Allocation) -> String {
+    // A preallocation seats in its own pass: ranks played no part.
+    if alloc.accepted_at.algorithm == Algorithm::Preallocation {
+        return "Seated before matching by operator preallocation.".to_string();
+    }
     format!(
         "Allocated at chair-rank {} (their preference #{}).",
         rank_text(alloc.chair_rank),
@@ -389,12 +410,16 @@ fn accept_detail(alloc: &Allocation) -> String {
 }
 
 /// Outcome classification, pre-run and run-aware. Precedence per pair:
-/// committed > appealed assignment > allocated assignment > last event (by
-/// seq) > didn't-rank-back > neutral.
-fn build_outcomes(pool: &Pool, appeals: &Appeals, result: Option<&MatchResult>) -> Vec<OutcomeView> {
+/// committed > preallocated assignment > allocated assignment > last event
+/// (by seq) > didn't-rank-back > neutral.
+fn build_outcomes(
+    pool: &Pool,
+    preallocations: &Preallocations,
+    result: Option<&MatchResult>,
+) -> Vec<OutcomeView> {
     // Pair universe: every applicant's preferences, every position's chair
-    // ranking, every committed appointment, every appeal, and (with a run)
-    // every assignment and event pair, deduped and sorted.
+    // ranking, every committed appointment, every preallocation, and (with a
+    // run) every assignment and event pair, deduped and sorted.
     let mut pairs: BTreeSet<(i32, i32)> = BTreeSet::new();
     for a in pool.applicants() {
         for &p in a.preferences() {
@@ -409,7 +434,7 @@ fn build_outcomes(pool: &Pool, appeals: &Appeals, result: Option<&MatchResult>) 
     for appointment in pool.appointments().iter() {
         pairs.insert((appointment.applicant.0, appointment.position.0));
     }
-    for (a, p) in appeals.iter() {
+    for (a, p) in preallocations.iter() {
         pairs.insert((a.0, p.0));
     }
     if let Some(result) = result {
@@ -461,20 +486,20 @@ fn build_outcomes(pool: &Pool, appeals: &Appeals, result: Option<&MatchResult>) 
                     position_id: pid,
                     status: Status::Existing,
                     label: "Appointment".into(),
-                    detail: "Already a committed appointment.".into(),
+                    detail: String::new(),
                 };
             }
 
             if result.is_some() {
-                // 2/3. Assignment this run, appealed or plain allocation.
+                // 2/3. Assignment this run, preallocated or plain allocation.
                 if assignment_by_pair.contains_key(&(aid, pid)) {
-                    if appeals.contains(applicant_id, position_id) {
+                    if preallocations.contains(applicant_id, position_id) {
                         return OutcomeView {
                             applicant_id: aid,
                             position_id: pid,
-                            status: Status::Appealed,
-                            label: "Appeal".into(),
-                            detail: "Allocated via appeal, exempt from quota.".into(),
+                            status: Status::Preallocated,
+                            label: "Preallocated".into(),
+                            detail: String::new(),
                         };
                     }
                     return OutcomeView {
@@ -482,7 +507,7 @@ fn build_outcomes(pool: &Pool, appeals: &Appeals, result: Option<&MatchResult>) 
                         position_id: pid,
                         status: Status::Allocated,
                         label: "Allocated".into(),
-                        detail: "Newly allocated by this run.".into(),
+                        detail: String::new(),
                     };
                 }
 
@@ -522,22 +547,25 @@ fn build_outcomes(pool: &Pool, appeals: &Appeals, result: Option<&MatchResult>) 
                 }
             }
 
-            // 5. Applicant never ranked this position back. An appeal on the
-            // pair bypasses this: it exists precisely to grant entry without
-            // reciprocal ranking, so it shouldn't get flagged as a no-return.
+            // 5. Applicant never ranked this position back. A preallocation
+            // on the pair bypasses this: it exists precisely to grant the
+            // seat without reciprocal ranking, so it shouldn't get flagged
+            // as a no-return.
             let applicant = pool.applicant(applicant_id);
             let ranked_back =
                 applicant.is_some_and(|a| a.preferences().contains(&position_id));
-            if !ranked_back && !appeals.contains(applicant_id, position_id) {
+            if !ranked_back && !preallocations.contains(applicant_id, position_id) {
                 let prefs_len = applicant.map_or(0, |a| a.preferences().len());
                 return OutcomeView {
                     applicant_id: aid,
                     position_id: pid,
                     status: Status::Noreturn,
                     label: "Didn't rank back".into(),
-                    detail: format!(
-                        "Didn't list this position ({prefs_len} preference slots used)."
-                    ),
+                    detail: if prefs_len == 0 {
+                        "Submitted no preferences at all.".to_string()
+                    } else {
+                        format!("Not among their {prefs_len} ranked preferences.")
+                    },
                 };
             }
 
@@ -548,7 +576,7 @@ fn build_outcomes(pool: &Pool, appeals: &Appeals, result: Option<&MatchResult>) 
                     position_id: pid,
                     status: Status::Neutral,
                     label: "Not allocated".into(),
-                    detail: "Not allocated in this run.".into(),
+                    detail: String::new(),
                 }
             } else {
                 OutcomeView {
@@ -563,12 +591,12 @@ fn build_outcomes(pool: &Pool, appeals: &Appeals, result: Option<&MatchResult>) 
         .collect()
 }
 
-fn build_run(pool: &Pool, appeals: &Appeals, result: &MatchResult) -> RunView {
+fn build_run(pool: &Pool, preallocations: &Preallocations, result: &MatchResult) -> RunView {
     let mut assignments: Vec<AssignmentView> = result
         .all()
         .map(|alloc| {
-            let kind = if appeals.contains(alloc.applicant_id, alloc.position_id) {
-                AssignmentKind::Appealed
+            let kind = if preallocations.contains(alloc.applicant_id, alloc.position_id) {
+                AssignmentKind::Preallocated
             } else {
                 AssignmentKind::Allocated
             };
@@ -638,7 +666,7 @@ mod tests {
     use super::*;
     use crate::models::*;
 
-    fn fixture() -> (Pool, Appeals) {
+    fn fixture() -> (Pool, Preallocations) {
         // Chess(1): Head(10, main, cap 2, chair ranks [1,2]); Sub(11, sub, cap 1, ranks [2])
         // Choir(2): Lead(20, block, cap 1, ranks [])
         let positions = vec![
@@ -657,13 +685,13 @@ mod tests {
         let pool = Pool::new(applicants, positions).with_appointments(Appointments::from_iter([
             Appointment { applicant: ApplicantIdx(3), position: PositionIdx(20) },
         ]));
-        (pool, Appeals::new())
+        (pool, Preallocations::new())
     }
 
     #[test]
     fn corpus_views_are_sorted_and_complete() {
-        let (pool, appeals) = fixture();
-        let s = build(&pool, &appeals, None, "2026-07-07T00:00:00Z".into(), vec![]);
+        let (pool, preallocations) = fixture();
+        let s = build(&pool, &preallocations, None, "2026-07-07T00:00:00Z".into(), vec![]);
         assert_eq!(s.ccas.iter().map(|c| c.id).collect::<Vec<_>>(), vec![1, 2]);
         assert_eq!(s.positions.iter().map(|p| p.id).collect::<Vec<_>>(), vec![10, 11, 20]);
         assert_eq!(s.positions[0].r#type, "main");
@@ -676,8 +704,8 @@ mod tests {
 
     #[test]
     fn quota_reflects_committed_holdings_pre_run() {
-        let (pool, appeals) = fixture();
-        let s = build(&pool, &appeals, None, "t".into(), vec![]);
+        let (pool, preallocations) = fixture();
+        let s = build(&pool, &preallocations, None, "t".into(), vec![]);
         let q3 = s.quota.iter().find(|q| q.applicant_id == 3).unwrap();
         assert_eq!((q3.main, q3.block, q3.sub), (0, 1, 0), "appointment to block position 20");
         assert!(q3.can_add_main && q3.can_add_block && q3.can_add_sub);
@@ -687,9 +715,9 @@ mod tests {
     }
 
     #[test]
-    fn seats_pre_run_show_existing_only() {
-        let (pool, appeals) = fixture();
-        let s = build(&pool, &appeals, None, "t".into(), vec![]);
+    fn seats_pre_run_show_existing_appointments() {
+        let (pool, preallocations) = fixture();
+        let s = build(&pool, &preallocations, None, "t".into(), vec![]);
         let seat20 = s.seats.iter().find(|x| x.position_id == 20).unwrap();
         assert_eq!(seat20.seated.len(), 1);
         assert_eq!(seat20.seated[0].applicant_id, 3);
@@ -698,9 +726,32 @@ mod tests {
     }
 
     #[test]
+    fn seats_pre_run_include_preallocated_claims() {
+        // A preallocation is a promised seat, so it fills the capacity bar
+        // before any run, behind the appointments already committed.
+        let (pool, mut preallocations) = fixture();
+        preallocations.grant(ApplicantIdx(1), PositionIdx(10));
+        preallocations.grant(ApplicantIdx(3), PositionIdx(20)); // already appointed there
+        let s = build(&pool, &preallocations, None, "t".into(), vec![]);
+
+        let seat10 = s.seats.iter().find(|x| x.position_id == 10).unwrap();
+        assert_eq!(seat10.seated.len(), 1);
+        assert_eq!(seat10.seated[0].applicant_id, 1);
+        assert_eq!(seat10.seated[0].status, Status::Preallocated);
+
+        let seat20 = s.seats.iter().find(|x| x.position_id == 20).unwrap();
+        assert_eq!(
+            seat20.seated.len(),
+            1,
+            "a committed pair holds one seat, not two"
+        );
+        assert_eq!(seat20.seated[0].status, Status::Existing);
+    }
+
+    #[test]
     fn outcomes_pre_run_cover_existing_noreturn_neutral() {
-        let (pool, appeals) = fixture();
-        let s = build(&pool, &appeals, None, "t".into(), vec![]);
+        let (pool, preallocations) = fixture();
+        let s = build(&pool, &preallocations, None, "t".into(), vec![]);
         let get = |a: i32, p: i32| s.outcomes.iter().find(|o| o.applicant_id == a && o.position_id == p);
         assert_eq!(get(3, 20).unwrap().status, Status::Existing);
         // Chair of Sub(11) ranked Ben, Ben ranked back: neutral pre-run.
@@ -712,15 +763,15 @@ mod tests {
             PositionType::MainComm, vec![ApplicantIdx(1)])];
         let applicants = vec![Applicant::new(1, "Ann".into(), "ann@x".into(), vec![])];
         let pool2 = Pool::new(applicants, positions);
-        let s2 = build(&pool2, &Appeals::new(), None, "t".into(), vec![]);
+        let s2 = build(&pool2, &Preallocations::new(), None, "t".into(), vec![]);
         let o = s2.outcomes.iter().find(|o| o.applicant_id == 1 && o.position_id == 30).unwrap();
         assert_eq!(o.status, Status::Noreturn);
         assert_eq!(o.label, "Didn't rank back");
     }
 
-    fn run_fixture() -> (Pool, Appeals, MatchResult) {
+    fn run_fixture() -> (Pool, Preallocations, MatchResult) {
         // One main seat (10), chair ranks Ann then Ben, both want it:
-        // Ben proposes, seated, then displaced by Ann. Cid appeals into Sub(11).
+        // Ben proposes, seated, then displaced by Ann. Cid is preallocated into Sub(11).
         let positions = vec![
             Position::new(10, Cca::new(1, "Chess"), "Head".into(), None, 1, PositionType::MainComm,
                 vec![ApplicantIdx(1), ApplicantIdx(2)]),
@@ -732,36 +783,36 @@ mod tests {
             Applicant::new(2, "Ben".into(), "ben@x".into(), vec![PositionIdx(10)]),
             Applicant::new(3, "Cid".into(), "cid@x".into(), vec![PositionIdx(11)]),
         ];
-        let mut appeals = Appeals::new();
-        appeals.grant(ApplicantIdx(3), PositionIdx(11));
+        let mut preallocations = Preallocations::new();
+        preallocations.grant(ApplicantIdx(3), PositionIdx(11));
 
         let mut ledger = Ledger::new(Algorithm::GaleShapley);
         ledger.accept(&applicants[1], &positions[0]);                // seq 0: Ben seated
         ledger.bump(&applicants[0], ApplicantIdx(2), &positions[0]); // seq 1 displace + seq 2 accept
-        ledger.accept(&applicants[2], &positions[1]);                // seq 3: Cid (appealed pair)
+        ledger.accept(&applicants[2], &positions[1]);                // seq 3: Cid (preallocated pair)
         let result = ledger.finish();
 
         let pool = Pool::new(applicants, positions);
-        (pool, appeals, result)
+        (pool, preallocations, result)
     }
 
     #[test]
     fn assignments_carry_kind_and_ranks() {
-        let (pool, appeals, result) = run_fixture();
-        let s = build(&pool, &appeals, Some(&result), "t".into(), vec![]);
+        let (pool, preallocations, result) = run_fixture();
+        let s = build(&pool, &preallocations, Some(&result), "t".into(), vec![]);
         let run = s.run.unwrap();
         let ann = run.assignments.iter().find(|a| a.applicant_id == 1).unwrap();
         assert!(matches!(ann.kind, AssignmentKind::Allocated));
         assert_eq!(ann.chair_rank, Some(1));
         assert_eq!(ann.pref_rank, Some(1));
         let cid = run.assignments.iter().find(|a| a.applicant_id == 3).unwrap();
-        assert!(matches!(cid.kind, AssignmentKind::Appealed));
+        assert!(matches!(cid.kind, AssignmentKind::Preallocated));
     }
 
     #[test]
     fn events_are_seq_ordered_and_include_accepts() {
-        let (pool, appeals, result) = run_fixture();
-        let s = build(&pool, &appeals, Some(&result), "t".into(), vec![]);
+        let (pool, preallocations, result) = run_fixture();
+        let s = build(&pool, &preallocations, Some(&result), "t".into(), vec![]);
         let run = s.run.unwrap();
         let seqs: Vec<_> = run.events.iter().map(|e| e.seq).collect();
         let mut sorted = seqs.clone();
@@ -776,27 +827,72 @@ mod tests {
 
     #[test]
     fn outcomes_with_run_classify_all_statuses() {
-        let (pool, appeals, result) = run_fixture();
-        let s = build(&pool, &appeals, Some(&result), "t".into(), vec![]);
+        let (pool, preallocations, result) = run_fixture();
+        let s = build(&pool, &preallocations, Some(&result), "t".into(), vec![]);
         let get = |a: i32, p: i32| s.outcomes.iter().find(|o| o.applicant_id == a && o.position_id == p).unwrap();
         assert_eq!(get(1, 10).status, Status::Allocated);
-        assert_eq!(get(3, 11).status, Status::Appealed);
+        assert_eq!(get(3, 11).status, Status::Preallocated);
         assert_eq!(get(2, 10).status, Status::Displaced);
     }
 
     #[test]
+    fn outcome_details_never_repeat_their_label() {
+        let (pool, preallocations, result) = run_fixture();
+        let s = build(&pool, &preallocations, Some(&result), "t".into(), vec![]);
+        let get = |a: i32, p: i32| s.outcomes.iter().find(|o| o.applicant_id == a && o.position_id == p).unwrap();
+        // The pill already says allocated/preallocated: no sub-text to repeat it.
+        assert_eq!(get(1, 10).detail, "");
+        assert_eq!(get(3, 11).detail, "");
+        // Displacement detail adds the who, not the what.
+        assert_eq!(get(2, 10).detail, "By Ann (chair-rank 1).");
+    }
+
+    #[test]
+    fn noreturn_detail_reports_preference_usage_only() {
+        let positions = vec![Position::new(30, Cca::new(1, "Chess"), "X".into(), None, 1,
+            PositionType::MainComm, vec![ApplicantIdx(1), ApplicantIdx(2)])];
+        let applicants = vec![
+            Applicant::new(1, "Ann".into(), "ann@x".into(), vec![]),
+            Applicant::new(2, "Ben".into(), "ben@x".into(), vec![PositionIdx(99), PositionIdx(98)]),
+        ];
+        let pool = Pool::new(applicants, positions);
+        let s = build(&pool, &Preallocations::new(), None, "t".into(), vec![]);
+        let get = |a: i32| s.outcomes.iter().find(|o| o.applicant_id == a && o.position_id == 30).unwrap();
+        assert_eq!(get(1).detail, "Submitted no preferences at all.");
+        assert_eq!(get(2).detail, "Not among their 2 ranked preferences.");
+    }
+
+    #[test]
+    fn preallocation_accept_events_do_not_speak_of_ranks() {
+        // A real run seats preallocations in their own pass; the event must
+        // say so instead of reporting meaningless chair/preference ranks.
+        let positions = vec![Position::new(10, Cca::new(1, "Chess"), "Head".into(), None, 1,
+            PositionType::MainComm, vec![])];
+        let applicants = vec![Applicant::new(1, "Ann".into(), "ann@x".into(), vec![])];
+        let pool = Pool::new(applicants, positions);
+        let mut preallocations = Preallocations::new();
+        preallocations.grant(ApplicantIdx(1), PositionIdx(10));
+
+        let result = crate::algorithm::run(&pool, &preallocations);
+        let s = build(&pool, &preallocations, Some(&result), "t".into(), vec![]);
+        let run = s.run.unwrap();
+        let accept = run.events.iter().find(|e| matches!(e.kind, EventKindView::Accept)).unwrap();
+        assert_eq!(accept.detail, "Seated before matching by operator preallocation.");
+    }
+
+    #[test]
     fn unfilled_reports_open_seats() {
-        let (pool, appeals, result) = run_fixture();
-        let s = build(&pool, &appeals, Some(&result), "t".into(), vec![]);
+        let (pool, preallocations, result) = run_fixture();
+        let s = build(&pool, &preallocations, Some(&result), "t".into(), vec![]);
         let run = s.run.unwrap();
         assert_eq!(run.unfilled, vec![UnfilledView { position_id: 11, open: 1 }]);
     }
 
     #[test]
-    fn appeal_only_pair_gets_an_outcome() {
+    fn preallocation_only_pair_gets_an_outcome() {
         // Applicant never ranked the position, chair never ranked the
-        // applicant: only an appeal links the pair. Pre-run, it must still
-        // surface as a neutral, unclassified outcome rather than vanish.
+        // applicant: only a preallocation links the pair. Pre-run, it must
+        // still surface as a neutral, unclassified outcome rather than vanish.
         let position = Position::new(
             40,
             Cca::new(1, "Chess"),
@@ -808,38 +904,46 @@ mod tests {
         );
         let applicant = Applicant::new(4, "Dee".into(), "dee@x".into(), vec![]);
         let pool = Pool::new(vec![applicant], vec![position]);
-        let mut appeals = Appeals::new();
-        appeals.grant(ApplicantIdx(4), PositionIdx(40));
+        let mut preallocations = Preallocations::new();
+        preallocations.grant(ApplicantIdx(4), PositionIdx(40));
 
-        let s = build(&pool, &appeals, None, "t".into(), vec![]);
+        let s = build(&pool, &preallocations, None, "t".into(), vec![]);
         let o = s
             .outcomes
             .iter()
             .find(|o| o.applicant_id == 4 && o.position_id == 40)
-            .unwrap_or_else(|| panic!("appeal-only pair (4, 40) missing from outcomes"));
+            .unwrap_or_else(|| panic!("preallocation-only pair (4, 40) missing from outcomes"));
         assert_eq!(o.status, Status::Neutral);
         assert_eq!(o.label, "—");
         assert_eq!(o.detail, "Run matching to see the outcome.");
 
-        // With a run, an appealed+assigned pair still classifies as Appealed.
-        let (pool, appeals, result) = run_fixture();
-        let s = build(&pool, &appeals, Some(&result), "t".into(), vec![]);
+        // With a run, a preallocated+assigned pair classifies as Preallocated.
+        let (pool, preallocations, result) = run_fixture();
+        let s = build(&pool, &preallocations, Some(&result), "t".into(), vec![]);
         let cid = s
             .outcomes
             .iter()
             .find(|o| o.applicant_id == 3 && o.position_id == 11)
             .unwrap();
-        assert_eq!(cid.status, Status::Appealed);
+        assert_eq!(cid.status, Status::Preallocated);
     }
 
     #[test]
     fn snapshot_serializes_camel_case_kebab_status() {
-        let (pool, appeals, result) = run_fixture();
-        let s = build(&pool, &appeals, Some(&result), "2026-07-07T00:00:00Z".into(), vec![]);
+        let (pool, preallocations, result) = run_fixture();
+        let s = build(&pool, &preallocations, Some(&result), "2026-07-07T00:00:00Z".into(), vec![]);
         let json = serde_json::to_value(&s).unwrap();
         assert!(json.get("syncedAt").is_some());
         assert_eq!(json["positions"][0]["type"], "main");
         assert_eq!(json["outcomes"].as_array().unwrap().iter()
             .find(|o| o["applicantId"] == 2 && o["positionId"] == 10).unwrap()["status"], "displaced");
+
+        // Wire contract for the preallocation rename.
+        assert!(json.get("preallocations").is_some(), "field renamed from appeals");
+        assert!(json.get("appeals").is_none());
+        let cid = json["run"]["assignments"].as_array().unwrap().iter()
+            .find(|a| a["applicantId"] == 3 && a["positionId"] == 11).unwrap();
+        assert_eq!(cid["kind"], "preallocated");
+        assert!(json["quota"][0].get("appealed").is_none(), "quota bucket removed");
     }
 }

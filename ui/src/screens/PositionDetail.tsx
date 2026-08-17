@@ -1,10 +1,10 @@
 // PositionDetail.tsx — task-14: position detail page.
 // Ports reference/cca-console-design.html positionDetail (576-591). All displayed values are
 // looked up from snapshot/idx — this screen never recomputes statuses or seat ordering.
-import { Badge, MatchRow } from "../components/index.ts";
+import { ChairCoverage, MatchRow, PositionTypeBadge } from "../components/index.ts";
 import { pk, type Indexes } from "../lib/indexes.ts";
 import type { Snapshot, Status } from "../lib/types.ts";
-import { DetailHero, IconTile, Section } from "./shared.tsx";
+import { DetailHero, IconTile, OutcomeLegend, Section } from "./shared.tsx";
 
 export interface PositionDetailProps {
   pid: number;
@@ -13,11 +13,11 @@ export interface PositionDetailProps {
   onOpenMatch: (aid: number, pid: number) => void;
 }
 
-// Seats are only ever existing/allocated/appealed (see snapshot::build_seats), but the shared
+// Seats are only ever existing/allocated/preallocated (see snapshot::build_seats), but the shared
 // Status union is broader, so this falls back to "New" for any other value.
 function seatLabel(status: Status): string {
   if (status === "existing") return "Appointment";
-  if (status === "appealed") return "Appeal";
+  if (status === "preallocated") return "Preallocated";
   return "New";
 }
 
@@ -30,7 +30,7 @@ export function PositionDetail({ pid, snapshot, idx, onOpenMatch }: PositionDeta
   const seated = idx.seatsByPos.get(pid) ?? [];
   const filled = seated.length;
   const full = filled >= pos.capacity;
-  const posAppeals = snapshot.appeals.filter((ap) => ap.positionId === pid);
+  const posPreallocations = snapshot.preallocations.filter((ap) => ap.positionId === pid);
 
   return (
     <>
@@ -38,11 +38,14 @@ export function PositionDetail({ pid, snapshot, idx, onOpenMatch }: PositionDeta
         leading={<IconTile name="folder" />}
         eyebrow={cca?.name ?? ""}
         title={pos.name}
-        badge={<Badge color={pos.type === "main" ? "highlight" : "neutral"} text={pos.type} />}
+        badge={<PositionTypeBadge type={pos.type} />}
         rightValue={`${filled}/${pos.capacity}`}
         rightLabel="filled"
         rightColor={full ? "var(--token-color-foreground-strong)" : "var(--token-color-foreground-critical-on-surface)"}
       />
+      <div style={{ margin: "-8px 0 20px" }}>
+        <OutcomeLegend />
+      </div>
       <Section title="Filled by">
         {seated.length ? (
           <div style={{ display: "flex", flexDirection: "column" }}>
@@ -63,10 +66,10 @@ export function PositionDetail({ pid, snapshot, idx, onOpenMatch }: PositionDeta
           </div>
         )}
       </Section>
-      {posAppeals.length ? (
-        <Section title="Appealed (quota-exempt)">
+      {posPreallocations.length ? (
+        <Section title="Preallocated">
           <div style={{ display: "flex", flexDirection: "column" }}>
-            {posAppeals.map((ap, k) => {
+            {posPreallocations.map((ap, k) => {
               const o = idx.outcomeByPair.get(pk(ap.applicantId, pid));
               return (
                 <MatchRow
@@ -83,6 +86,9 @@ export function PositionDetail({ pid, snapshot, idx, onOpenMatch }: PositionDeta
         </Section>
       ) : null}
       <Section title="Chair's ranking">
+        <div style={{ marginBottom: 10 }}>
+          <ChairCoverage ranked={pos.chairRank.length} openSeats={Math.max(pos.capacity - filled, 0)} />
+        </div>
         <div style={{ display: "flex", flexDirection: "column" }}>
           {pos.chairRank.map((cid, i) => {
             const o = idx.outcomeByPair.get(pk(cid, pid));
@@ -93,8 +99,7 @@ export function PositionDetail({ pid, snapshot, idx, onOpenMatch }: PositionDeta
                 num={i + 1}
                 name={idx.appById.get(cid)?.name ?? ""}
                 sub={hasRun || o?.status === "noreturn" ? (o?.detail ?? null) : null}
-                meta={pr ? `their pref #${pr}` : "not in their prefs"}
-                metaColor={pr ? undefined : "var(--token-color-foreground-critical-on-surface)"}
+                meta={pr ? `their pref #${pr}` : null}
                 status={o?.status ?? "neutral"}
                 statusLabel={o?.label ?? "—"}
                 onClick={() => onOpenMatch(cid, pid)}

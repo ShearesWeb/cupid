@@ -21,7 +21,7 @@ const MAP: Record<Status, StatusStyle> = {
     bd: "var(--token-color-border-success)",
     dot: "var(--token-color-foreground-success)",
   },
-  appealed: {
+  preallocated: {
     bg: "rgba(219,42,99,0.10)",
     fg: "#B91C53",
     bd: "rgba(219,42,99,0.32)",

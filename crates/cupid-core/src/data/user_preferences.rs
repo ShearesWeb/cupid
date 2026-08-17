@@ -2,7 +2,7 @@ use std::error::Error;
 
 use postgres::Client;
 
-/// One row of `cca_user_preferences` joined to the applicant's identity.
+/// One row of `preferred_positions` joined to the applicant's identity.
 #[derive(Debug)]
 pub struct UserPrefRecord {
     pub user_id: i32,
@@ -12,12 +12,12 @@ pub struct UserPrefRecord {
     pub user_email: String,
 }
 
-/// Load the DB `cca_user_preferences` into `UserPrefRecord>`.
+/// Load the DB `preferred_positions` into `UserPrefRecord>`.
 pub fn load(client: &mut Client) -> Result<Vec<UserPrefRecord>, Box<dyn Error>> {
     let rows = client.query(
         "SELECT up.user_id, up.position_id, up.rank, \
                 u.name AS user_name, u.email AS user_email \
-         FROM cca_user_preferences up \
+         FROM preferred_positions up \
          JOIN users u ON u.id = up.user_id",
         &[],
     )?;

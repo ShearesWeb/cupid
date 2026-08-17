@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use super::applicant::ApplicantIdx;
+use super::cca::CcaIdx;
 use super::pool::Pool;
-use super::position::{PositionIdx, PositionType};
+use super::position::PositionType;
 
 /// What one applicant currently holds, tallied by allocatable type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -10,16 +11,11 @@ pub struct HeldCounts {
     pub blockcomm: u8,
     pub maincomm: u8,
     pub subcomm: u8,
-    pub appealed: u8,
 }
 
 impl HeldCounts {
     /// Apply a delta of `+1` for taking a position.
-    fn add(&mut self, ty: PositionType, appealed: bool) {
-        if appealed {
-            self.appealed += 1;
-            return;
-        }
+    fn add(&mut self, ty: PositionType) {
         match ty {
             PositionType::BlockComm => self.blockcomm += 1,
             PositionType::MainComm => self.maincomm += 1,
@@ -28,11 +24,7 @@ impl HeldCounts {
     }
 
     /// Apply a delta of `-1` for losing a position.
-    fn remove(&mut self, ty: PositionType, appealed: bool) {
-        if appealed {
-            self.appealed = self.appealed.saturating_sub(1);
-            return;
-        }
+    fn remove(&mut self, ty: PositionType) {
         match ty {
             PositionType::BlockComm => self.blockcomm = self.blockcomm.saturating_sub(1),
             PositionType::MainComm => self.maincomm = self.maincomm.saturating_sub(1),
@@ -49,15 +41,19 @@ impl HeldCounts {
     /// Would adding one position of `ty` to the current holdings exceed quota?
     pub fn can_add(&self, ty: PositionType) -> bool {
         let mut next = *self;
-        next.add(ty, false);
+        next.add(ty);
         next.within_quota()
     }
 }
 
-/// Mutable run-state: per-applicant tally of held positions.
+/// Mutable run-state: per-applicant tally of held positions, by type and by
+/// CCA. The CCA tally mirrors the database rule that a user may hold at most
+/// one non-resident position per CCA (everything cupid allocates is
+/// non-resident, and cupid treats every holding as full-year).
 #[derive(Debug, Default)]
 pub struct CapacityStore {
     held: HashMap<ApplicantIdx, HeldCounts>,
+    ccas: HashMap<ApplicantIdx, HashMap<CcaIdx, u8>>,
 }
 
 impl CapacityStore {
@@ -70,90 +66,62 @@ impl CapacityStore {
         self.held.get(&applicant).copied().unwrap_or_default()
     }
 
-    /// Would granting `applicant` a position of `ty` keep them within limits?
-    /// Appealed seats must bypass this check entirely.
-    pub fn can_grant(&self, applicant: ApplicantIdx, ty: PositionType) -> bool {
-        self.get(applicant).can_add(ty)
+    /// How many non-resident positions `applicant` holds in `cca`.
+    pub fn cca_held(&self, applicant: ApplicantIdx, cca: CcaIdx) -> u8 {
+        self.ccas
+            .get(&applicant)
+            .and_then(|held| held.get(&cca))
+            .copied()
+            .unwrap_or(0)
     }
 
-    /// Record that `applicant` took a position of `ty` or `appealed` in tally.
-    pub fn grant(&mut self, applicant: ApplicantIdx, ty: PositionType, appealed: bool) {
-        self.held.entry(applicant).or_default().add(ty, appealed);
+    /// Would granting `applicant` a position of `ty` in `cca` keep them
+    /// within limits? Both the type quota and the one-per-CCA rule apply.
+    pub fn can_grant(&self, applicant: ApplicantIdx, ty: PositionType, cca: CcaIdx) -> bool {
+        self.get(applicant).can_add(ty) && self.cca_held(applicant, cca) == 0
     }
 
-    /// Record that `applicant` lost a position of `ty` or `appealed` in tally.
-    pub fn revoke(&mut self, applicant: ApplicantIdx, ty: PositionType, appealed: bool) {
+    /// Record that `applicant` took a position of `ty` in `cca`.
+    pub fn grant(&mut self, applicant: ApplicantIdx, ty: PositionType, cca: CcaIdx) {
+        self.held.entry(applicant).or_default().add(ty);
+        self.bump_cca(applicant, cca, 1);
+    }
+
+    /// Record that `applicant` lost a position of `ty` in `cca`.
+    pub fn revoke(&mut self, applicant: ApplicantIdx, ty: PositionType, cca: CcaIdx) {
         if let Some(counts) = self.held.get_mut(&applicant) {
-            counts.remove(ty, appealed);
+            counts.remove(ty);
         }
+        self.bump_cca(applicant, cca, -1);
     }
 
-    /// Seed every holder's tally from existing appointments. An appointment
-    /// whose pair is appealed stays quota-exempt even after it was committed:
-    /// it lands in the exempt bucket, not the type tally.
-    pub fn from_pool(pool: &Pool, appeals: &Appeals) -> Self {
+    /// Record a holding that only occupies a CCA slot: an appointment to a
+    /// position cupid does not allocate (e.g. `member`). It never counts
+    /// toward the type quota, but the database still enforces one
+    /// non-resident position per CCA, so the matcher must see it.
+    pub fn note_external(&mut self, applicant: ApplicantIdx, cca: CcaIdx) {
+        self.bump_cca(applicant, cca, 1);
+    }
+
+    fn bump_cca(&mut self, applicant: ApplicantIdx, cca: CcaIdx, delta: i8) {
+        let held = self.ccas.entry(applicant).or_default().entry(cca).or_insert(0);
+        *held = held.saturating_add_signed(delta);
+    }
+
+    /// Seed every holder's tally from the pool: committed appointments count
+    /// toward both the type quota and the CCA rule; external occupancy
+    /// (appointments to positions outside the market) toward the CCA rule only.
+    pub fn from_pool(pool: &Pool) -> Self {
         let mut store = CapacityStore::new();
         for appointment in pool.appointments().iter() {
             if let Some(position) = pool.position(appointment.position) {
-                store.grant(
-                    appointment.applicant,
-                    position.position_type,
-                    appeals.contains(appointment.applicant, appointment.position),
-                );
+                store.grant(appointment.applicant, position.position_type, position.cca.id);
             }
         }
+        for &(applicant, cca) in pool.external_occupancy() {
+            store.note_external(applicant, cca);
+        }
         store
-    }
-}
-
-/// An exempt proposal whitelists a specific `(applicant, position)` so it does not count
-/// toward the applicant's capacity limits. Each pair may carry an operator
-/// note explaining why the exemption was granted.
-#[derive(Debug, Default)]
-pub struct Appeals {
-    whitelist: HashMap<(ApplicantIdx, PositionIdx), Option<String>>,
-}
-
-impl Appeals {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Whitelist the `(applicant, position)` proposal as quota-exempt.
-    pub fn grant(&mut self, applicant: ApplicantIdx, position: PositionIdx) {
-        self.whitelist.insert((applicant, position), None);
-    }
-
-    /// Whitelist with an operator note. Re-granting replaces the note.
-    pub fn grant_with_note(
-        &mut self,
-        applicant: ApplicantIdx,
-        position: PositionIdx,
-        note: Option<String>,
-    ) {
-        self.whitelist.insert((applicant, position), note);
-    }
-
-    /// Remove the exemption. A missing pair is a no-op.
-    pub fn revoke(&mut self, applicant: ApplicantIdx, position: PositionIdx) {
-        self.whitelist.remove(&(applicant, position));
-    }
-
-    /// Is this exact `(applicant, position)` proposal exempt from quota?
-    pub fn contains(&self, applicant: ApplicantIdx, position: PositionIdx) -> bool {
-        self.whitelist.contains_key(&(applicant, position))
-    }
-
-    /// The operator note attached to an exempt pair, if any.
-    pub fn note(&self, applicant: ApplicantIdx, position: PositionIdx) -> Option<&str> {
-        self.whitelist
-            .get(&(applicant, position))
-            .and_then(|n| n.as_deref())
-    }
-
-    /// Every exempt pair, in no particular order.
-    pub fn iter(&self) -> impl Iterator<Item = (ApplicantIdx, PositionIdx)> + '_ {
-        self.whitelist.keys().copied()
     }
 }
 
@@ -168,7 +136,6 @@ mod tests {
             blockcomm: block,
             maincomm: main,
             subcomm: sub,
-            appealed: 0,
         }
     }
 
@@ -209,12 +176,22 @@ mod tests {
     }
 
     #[test]
+    fn within_quota_matches_rule() {
+        assert!(held(1, 1, 0).within_quota());
+        assert!(held(1, 1, 1).within_quota(), "2 main/block + 1 sub is legal");
+        assert!(held(0, 0, 3).within_quota());
+        assert!(!held(2, 1, 0).within_quota(), "3 main/block");
+        assert!(!held(0, 1, 2).within_quota(), "cross rule");
+        assert!(!held(0, 0, 4).within_quota(), "4 sub");
+    }
+
+    #[test]
     fn store_grant_tracks_each_type() {
         let mut store = CapacityStore::new();
         let a = ApplicantIdx(1);
-        store.grant(a, BlockComm, false);
-        store.grant(a, MainComm, false);
-        store.grant(a, SubComm, false);
+        store.grant(a, BlockComm, CcaIdx(1));
+        store.grant(a, MainComm, CcaIdx(2));
+        store.grant(a, SubComm, CcaIdx(3));
         let counts = store.get(a);
         assert_eq!(
             (counts.blockcomm, counts.maincomm, counts.subcomm),
@@ -226,14 +203,14 @@ mod tests {
     fn store_revoke_decrements_and_saturates() {
         let mut store = CapacityStore::new();
         let a = ApplicantIdx(1);
-        store.grant(a, SubComm, false);
-        store.revoke(a, SubComm, false);
+        store.grant(a, SubComm, CcaIdx(1));
+        store.revoke(a, SubComm, CcaIdx(1));
         assert_eq!(store.get(a).subcomm, 0);
         // Revoking below zero stays at zero rather than wrapping.
-        store.revoke(a, SubComm, false);
+        store.revoke(a, SubComm, CcaIdx(1));
         assert_eq!(store.get(a).subcomm, 0);
         // Revoking an applicant with no record at all is a no-op.
-        store.revoke(ApplicantIdx(99), MainComm, false);
+        store.revoke(ApplicantIdx(99), MainComm, CcaIdx(1));
         assert_eq!(store.get(ApplicantIdx(99)), HeldCounts::default());
     }
 
@@ -241,39 +218,67 @@ mod tests {
     fn can_grant_delegates_to_quota() {
         let mut store = CapacityStore::new();
         let a = ApplicantIdx(1);
-        store.grant(a, MainComm, false);
-        store.grant(a, SubComm, false);
+        store.grant(a, MainComm, CcaIdx(1));
+        store.grant(a, SubComm, CcaIdx(2));
         // Now 1 main + 1 sub: a second sub is barred by the cross rule...
-        assert!(!store.can_grant(a, SubComm));
+        assert!(!store.can_grant(a, SubComm, CcaIdx(3)));
         // ...but a block still fits (main+block = 2, sub = 1).
-        assert!(store.can_grant(a, BlockComm));
+        assert!(store.can_grant(a, BlockComm, CcaIdx(3)));
     }
 
     #[test]
-    fn appealed_grant_is_invisible_to_quota() {
-        // Appealed seats land in their own bucket and never restrict later grants.
+    fn second_position_in_same_cca_is_barred() {
+        // The database allows one non-resident position per user per CCA.
         let mut store = CapacityStore::new();
         let a = ApplicantIdx(1);
-        store.grant(a, MainComm, true);
-        store.grant(a, MainComm, true);
-        let counts = store.get(a);
-        assert_eq!(counts.appealed, 2);
-        assert_eq!(counts.maincomm, 0, "appealed seats skip the type bucket");
-        // Quota still sees zero real holdings, so a real main remains grantable.
-        assert!(store.can_grant(a, MainComm));
+        store.grant(a, MainComm, CcaIdx(5));
+        assert_eq!(store.cca_held(a, CcaIdx(5)), 1);
+        assert!(
+            !store.can_grant(a, SubComm, CcaIdx(5)),
+            "second position in CCA 5 must be barred even though the type quota allows it"
+        );
+        assert!(
+            store.can_grant(a, SubComm, CcaIdx(6)),
+            "a different CCA is unaffected"
+        );
+        // Another applicant is unaffected.
+        assert!(store.can_grant(ApplicantIdx(2), SubComm, CcaIdx(5)));
     }
 
     #[test]
-    fn from_pool_seeds_quota_from_appointments() {
+    fn revoke_frees_the_cca_slot() {
+        let mut store = CapacityStore::new();
+        let a = ApplicantIdx(1);
+        store.grant(a, SubComm, CcaIdx(5));
+        assert!(!store.can_grant(a, MainComm, CcaIdx(5)));
+        store.revoke(a, SubComm, CcaIdx(5));
+        assert_eq!(store.cca_held(a, CcaIdx(5)), 0);
+        assert!(store.can_grant(a, MainComm, CcaIdx(5)), "slot freed by revoke");
+    }
+
+    #[test]
+    fn external_occupancy_blocks_the_cca_but_not_the_type_quota() {
+        // A `member` appointment in CCA 5: invisible to the type quota,
+        // but the CCA slot is taken.
+        let mut store = CapacityStore::new();
+        let a = ApplicantIdx(1);
+        store.note_external(a, CcaIdx(5));
+        assert_eq!(store.get(a), HeldCounts::default(), "no type tally");
+        assert!(!store.can_grant(a, MainComm, CcaIdx(5)), "CCA slot taken");
+        assert!(store.can_grant(a, MainComm, CcaIdx(6)));
+    }
+
+    #[test]
+    fn from_pool_seeds_quota_and_cca_from_appointments() {
         use crate::models::{
-            Applicant, Appointment, Appointments, Cca, Pool, Position, PositionIdx,
+            Applicant, Appointment, Appointments, Cca, CcaIdx, Pool, Position, PositionIdx,
         };
 
         let applicants = vec![Applicant::new(1, "Ann".into(), "a@x".into(), vec![])];
         let positions = vec![
-            Position::new(10, Cca::new(0, "C"), "M".into(), None, 2, MainComm, vec![])
+            Position::new(10, Cca::new(7, "C7"), "M".into(), None, 2, MainComm, vec![])
                 .with_appointed(1),
-            Position::new(20, Cca::new(0, "C"), "S".into(), None, 2, SubComm, vec![])
+            Position::new(20, Cca::new(8, "C8"), "S".into(), None, 2, SubComm, vec![])
                 .with_appointed(1),
         ];
         let appointments = Appointments::from_iter([
@@ -286,75 +291,20 @@ mod tests {
                 position: PositionIdx(20),
             },
         ]);
-        let pool = Pool::new(applicants, positions).with_appointments(appointments);
+        let pool = Pool::new(applicants, positions)
+            .with_appointments(appointments)
+            .with_external_occupancy(vec![(ApplicantIdx(1), CcaIdx(9))]);
 
-        let store = CapacityStore::from_pool(&pool, &Appeals::new());
+        let store = CapacityStore::from_pool(&pool);
         let counts = store.get(ApplicantIdx(1));
         assert_eq!(counts.maincomm, 1);
         assert_eq!(counts.subcomm, 1);
 
-        // A committed appointment whose pair is appealed stays quota-exempt:
-        // it must land in the appealed bucket, not the type tally, or the
-        // applicant reads permanently over-quota after commit + re-sync.
-        let mut appeals = Appeals::new();
-        appeals.grant(ApplicantIdx(1), PositionIdx(20));
-        let store = CapacityStore::from_pool(&pool, &appeals);
-        let counts = store.get(ApplicantIdx(1));
-        assert_eq!(counts.maincomm, 1);
-        assert_eq!(counts.subcomm, 0, "appealed appointment skips the sub tally");
-        assert_eq!(counts.appealed, 1);
-    }
-
-    #[test]
-    fn appeals_match_exact_pair_only() {
-        let mut appeals = Appeals::new();
-        appeals.grant(ApplicantIdx(1), PositionIdx(10));
-        assert!(appeals.contains(ApplicantIdx(1), PositionIdx(10)));
-        // Same applicant, different position: not exempt.
-        assert!(!appeals.contains(ApplicantIdx(1), PositionIdx(11)));
-        // Different applicant, same position: not exempt.
-        assert!(!appeals.contains(ApplicantIdx(2), PositionIdx(10)));
-    }
-
-    #[test]
-    fn within_quota_matches_rule() {
-        assert!(held(1, 1, 0).within_quota());
-        assert!(held(1, 1, 1).within_quota(), "2 main/block + 1 sub is legal");
-        assert!(held(0, 0, 3).within_quota());
-        assert!(!held(2, 1, 0).within_quota(), "3 main/block");
-        assert!(!held(0, 1, 2).within_quota(), "cross rule");
-        assert!(!held(0, 0, 4).within_quota(), "4 sub");
-    }
-
-    #[test]
-    fn appeals_iterates_pairs() {
-        let mut appeals = Appeals::new();
-        appeals.grant(ApplicantIdx(1), PositionIdx(10));
-        let pairs: Vec<_> = appeals.iter().collect();
-        assert_eq!(pairs, vec![(ApplicantIdx(1), PositionIdx(10))]);
-    }
-
-    #[test]
-    fn appeals_revoke_removes_only_that_pair() {
-        let mut appeals = Appeals::new();
-        appeals.grant(ApplicantIdx(1), PositionIdx(10));
-        appeals.grant(ApplicantIdx(2), PositionIdx(10));
-        appeals.revoke(ApplicantIdx(1), PositionIdx(10));
-        assert!(!appeals.contains(ApplicantIdx(1), PositionIdx(10)));
-        assert!(appeals.contains(ApplicantIdx(2), PositionIdx(10)));
-        // Revoking a missing pair is a no-op.
-        appeals.revoke(ApplicantIdx(9), PositionIdx(9));
-    }
-
-    #[test]
-    fn appeals_note_round_trips_and_regrant_replaces() {
-        let mut appeals = Appeals::new();
-        appeals.grant_with_note(ApplicantIdx(1), PositionIdx(10), Some("chair request".into()));
-        assert_eq!(appeals.note(ApplicantIdx(1), PositionIdx(10)), Some("chair request"));
-        // Plain grant has no note; regranting the same pair replaces it.
-        appeals.grant(ApplicantIdx(1), PositionIdx(10));
-        assert_eq!(appeals.note(ApplicantIdx(1), PositionIdx(10)), None);
-        // Unknown pair has no note.
-        assert_eq!(appeals.note(ApplicantIdx(2), PositionIdx(10)), None);
+        // Appointments occupy their CCA slots; external occupancy (an
+        // appointment outside the market) occupies its CCA slot too.
+        assert!(!store.can_grant(ApplicantIdx(1), BlockComm, CcaIdx(7)));
+        assert!(!store.can_grant(ApplicantIdx(1), BlockComm, CcaIdx(8)));
+        assert!(!store.can_grant(ApplicantIdx(1), BlockComm, CcaIdx(9)));
+        assert!(store.can_grant(ApplicantIdx(1), BlockComm, CcaIdx(6)));
     }
 }

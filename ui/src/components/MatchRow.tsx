@@ -16,7 +16,7 @@ export interface MatchRowProps {
   onClick: () => void;
 }
 
-const TINTED: Status[] = ["existing", "allocated", "appealed"];
+const TINTED: Status[] = ["existing", "allocated", "preallocated"];
 
 export function MatchRow({ num, name, sub, meta, metaColor, status, statusLabel, onClick }: MatchRowProps) {
   const st = statusStyle(status);

@@ -1,14 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::models::{
-    Appeals, Applicant, ApplicantIdx, CapacityStore, Ledger, PositionIdx, RejectReason, Roster,
+    Applicant, ApplicantIdx, CapacityStore, Ledger, PositionIdx, RejectReason, Roster,
 };
 
 /// Pass 1 — Immediate Acceptance (Boston mechanism), BlockComm positions only.
+/// Preallocated seats are already in the ledger and are skipped, not re-proposed.
 ///
 /// Applicants are swept in id order and positions settled in id order so
 /// identical inputs always produce the identical result, event for event.
-pub fn run(pool: &Roster, appeals: &Appeals, store: &mut CapacityStore, ledger: &mut Ledger) {
+pub fn run(pool: &Roster, store: &mut CapacityStore, ledger: &mut Ledger) {
     let mut applicants: Vec<&Applicant> = pool.applicants().collect();
     applicants.sort_by_key(|a| a.id.0);
 
@@ -29,9 +30,13 @@ pub fn run(pool: &Roster, appeals: &Appeals, store: &mut CapacityStore, ledger: 
                 continue;
             };
 
-            let appealed = appeals.contains(applicant.id, pid);
-            // Appeal bypass quota; else over-quota = reject.
-            if !appealed && !store.can_grant(applicant.id, position.position_type) {
+            // Already seated here by preallocation: nothing to propose.
+            if ledger.holders(pid).contains(&applicant.id) {
+                continue;
+            }
+
+            // Over-quota (type or CCA) = reject.
+            if !store.can_grant(applicant.id, position.position_type, position.cca.id) {
                 ledger.reject(applicant.id, pid, RejectReason::ApplicantCapacityFull);
                 continue;
             }
@@ -49,7 +54,8 @@ pub fn run(pool: &Roster, appeals: &Appeals, store: &mut CapacityStore, ledger: 
         // seats run out. Acceptance is permanent.
         for (pid, proposers) in &proposals {
             let position = pool.position(*pid).unwrap();
-            let mut seats_left = position.vacancies() - ledger.holder_count(*pid);
+            // Preallocations may overfill a position; saturate instead of underflowing.
+            let mut seats_left = position.vacancies().saturating_sub(ledger.holder_count(*pid));
 
             // Walk chair ranking (best first) so seats go to top proposers.
             let mut seated: BTreeSet<ApplicantIdx> = BTreeSet::new();
@@ -58,8 +64,7 @@ pub fn run(pool: &Roster, appeals: &Appeals, store: &mut CapacityStore, ledger: 
                     break;
                 }
                 if proposers.contains(&cand) {
-                    let appealed = appeals.contains(cand, *pid);
-                    store.grant(cand, position.position_type, appealed);
+                    store.grant(cand, position.position_type, position.cca.id);
                     ledger.accept(pool.applicant(cand).unwrap(), position);
                     seated.insert(cand);
                     seats_left -= 1;

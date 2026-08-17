@@ -6,6 +6,8 @@ use super::position::{Position, PositionIdx};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Algorithm {
+    /// Operator preallocations, seated before any matching pass.
+    Preallocation,
     ImmediateAcceptance,
     GaleShapley,
 }

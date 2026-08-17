@@ -1,5 +1,14 @@
 {
   "identifier": "default",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default"]
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "updater:default",
+    "process:allow-restart",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://github.com/ShearesWeb/*" }]
+    }
+  ]
 }

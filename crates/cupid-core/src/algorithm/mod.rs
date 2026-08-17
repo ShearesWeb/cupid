@@ -1,13 +1,14 @@
 mod gale_shapley;
 mod immediate_acceptance;
 
-use crate::models::{Algorithm, Appeals, CapacityStore, Ledger, MatchResult, Pool, Roster};
+use crate::models::{Algorithm, CapacityStore, Ledger, MatchResult, Pool, Preallocations, Roster};
 
-/// Run the full two-pass allocation.
+/// Run the full allocation.
 ///
+///   Pass 0: seat every preallocated pair outright.
 ///   Pass 1: Immediate Acceptance over all BlockComm positions.
 ///   Pass 2: Gale-Shapley over all MainComm + SubComm positions.
-pub fn run(pool: &Pool, appeals: &Appeals) -> MatchResult {
+pub fn run(pool: &Pool, preallocations: &Preallocations) -> MatchResult {
     let ia = Roster::for_algorithm(
         pool.applicants(),
         pool.positions(),
@@ -15,23 +16,54 @@ pub fn run(pool: &Pool, appeals: &Appeals) -> MatchResult {
     );
     let gs = Roster::for_algorithm(pool.applicants(), pool.positions(), Algorithm::GaleShapley);
 
-    // One ledger and store carry across both passes
-    let mut ledger: Ledger = Ledger::new(Algorithm::ImmediateAcceptance);
-    let mut store: CapacityStore = CapacityStore::from_pool(pool, appeals);
+    // One ledger and store carry across all passes
+    let mut ledger: Ledger = Ledger::new(Algorithm::Preallocation);
+    let mut store: CapacityStore = CapacityStore::from_pool(pool);
 
-    immediate_acceptance::run(&ia, appeals, &mut store, &mut ledger);
+    seat_preallocations(pool, preallocations, &mut store, &mut ledger);
+
+    ledger.enter(Algorithm::ImmediateAcceptance, 0);
+    immediate_acceptance::run(&ia, &mut store, &mut ledger);
     ledger.enter(Algorithm::GaleShapley, 0);
-    gale_shapley::run(&gs, appeals, &mut store, &mut ledger);
+    gale_shapley::run(&gs, preallocations, &mut store, &mut ledger);
 
     ledger.finish()
+}
+
+/// Pass 0: every preallocated pair is seated outright, before any matching.
+/// The pair consumes the position's capacity and the holder's quota (type and
+/// CCA), and later passes may neither re-seat nor displace it. A pair that is
+/// already a committed appointment occupies its seat via the corpus instead,
+/// so re-seating it here would double-count; it is skipped. Pairs are swept
+/// in sorted order for determinism.
+fn seat_preallocations(
+    pool: &Pool,
+    preallocations: &Preallocations,
+    store: &mut CapacityStore,
+    ledger: &mut Ledger,
+) {
+    let mut pairs: Vec<_> = preallocations.iter().collect();
+    pairs.sort();
+    for (applicant_id, position_id) in pairs {
+        if pool.appointments().held_by(applicant_id).contains(&position_id) {
+            continue;
+        }
+        let (Some(applicant), Some(position)) =
+            (pool.applicant(applicant_id), pool.position(position_id))
+        else {
+            continue; // stale pair: load already warned about it
+        };
+        store.grant(applicant_id, position.position_type, position.cca.id);
+        ledger.accept(applicant, position);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::algorithm::run;
     use crate::models::{
-        Appeals, Applicant, ApplicantIdx, Appointment, Appointments, Cca, Pool, Position,
-        PositionIdx, PositionType,
+        Applicant, ApplicantIdx, Appointment, Appointments, Cca, Pool, Position, PositionIdx,
+        PositionType, Preallocations,
     };
 
     #[test]
@@ -47,7 +79,7 @@ mod tests {
         let positions = vec![
             Position::new(
                 100,
-                Cca::new(0, "C"),
+                Cca::new(1, "C1"),
                 "Block".into(),
                 None,
                 1,
@@ -56,7 +88,7 @@ mod tests {
             ),
             Position::new(
                 200,
-                Cca::new(0, "C"),
+                Cca::new(2, "C2"),
                 "Main".into(),
                 None,
                 1,
@@ -65,7 +97,7 @@ mod tests {
             ),
         ];
 
-        let result = run(&Pool::new(applicants, positions), &Appeals::new());
+        let result = run(&Pool::new(applicants, positions), &Preallocations::new());
 
         let held = result.positions_of(ApplicantIdx(1));
         assert!(
@@ -77,19 +109,213 @@ mod tests {
     use crate::models::PositionType::{BlockComm, MainComm, SubComm};
 
     #[test]
-    fn appeal_bypasses_quota() {
-        // Applicant 1 wants a maincomm + two subcomms. Holding 1 main + 2 sub violates
-        // the (main>=1 && sub>=2) rule, so the second subcomm (301) is normally rejected.
+    fn preallocated_pair_is_seated_outright() {
+        // Neither side ranked the other; the operator preallocated the pair.
+        // The seat is granted before any pass, without chair or applicant input.
+        let applicants = vec![Applicant::new(1, "Ann".into(), "a@x".into(), vec![])];
+        let positions = vec![Position::new(
+            200,
+            Cca::new(1, "C1"),
+            "Main".into(),
+            None,
+            1,
+            MainComm,
+            vec![],
+        )];
+        let mut preallocations = Preallocations::new();
+        preallocations.grant(ApplicantIdx(1), PositionIdx(200));
+
+        let result = run(&Pool::new(applicants, positions), &preallocations);
+        assert_eq!(result.positions_of(ApplicantIdx(1)), &[PositionIdx(200)]);
+    }
+
+    #[test]
+    fn preallocation_consumes_the_seat_and_is_never_bumped() {
+        // Cap-1 maincomm preallocated to Ann (chair-unranked). Ben is the
+        // chair's #1 and proposes: under plain GS he would displace the
+        // weakest holder, but a preallocated seat is not up for grabs.
+        let applicants = vec![
+            Applicant::new(1, "Ann".into(), "a@x".into(), vec![]),
+            Applicant::new(2, "Ben".into(), "b@x".into(), vec![PositionIdx(200)]),
+        ];
+        let positions = vec![Position::new(
+            200,
+            Cca::new(1, "C1"),
+            "Main".into(),
+            None,
+            1,
+            MainComm,
+            vec![ApplicantIdx(2)],
+        )];
+        let mut preallocations = Preallocations::new();
+        preallocations.grant(ApplicantIdx(1), PositionIdx(200));
+
+        let result = run(&Pool::new(applicants, positions), &preallocations);
+        assert_eq!(result.positions_of(ApplicantIdx(1)), &[PositionIdx(200)]);
+        assert!(
+            result.positions_of(ApplicantIdx(2)).is_empty(),
+            "Ben must not displace the preallocated holder"
+        );
+    }
+
+    #[test]
+    fn preallocation_counts_toward_quota() {
+        // Two preallocated maincomms exhaust main+block <= 2, so Ann's own
+        // maincomm proposal must be rejected on quota.
         let applicants = vec![Applicant::new(
             1,
             "Ann".into(),
             "a@x".into(),
-            vec![PositionIdx(200), PositionIdx(300), PositionIdx(301)],
+            vec![PositionIdx(60)],
+        )];
+        let positions = vec![
+            Position::new(40, Cca::new(1, "C1"), "M1".into(), None, 1, MainComm, vec![]),
+            Position::new(41, Cca::new(2, "C2"), "M2".into(), None, 1, MainComm, vec![]),
+            Position::new(
+                60,
+                Cca::new(3, "C3"),
+                "M3".into(),
+                None,
+                1,
+                MainComm,
+                vec![ApplicantIdx(1)],
+            ),
+        ];
+        let mut preallocations = Preallocations::new();
+        preallocations.grant(ApplicantIdx(1), PositionIdx(40));
+        preallocations.grant(ApplicantIdx(1), PositionIdx(41));
+
+        let result = run(&Pool::new(applicants, positions), &preallocations);
+        let held = result.positions_of(ApplicantIdx(1));
+        assert!(held.contains(&PositionIdx(40)) && held.contains(&PositionIdx(41)));
+        assert!(
+            !held.contains(&PositionIdx(60)),
+            "preallocated seats fill the main+block quota"
+        );
+    }
+
+    #[test]
+    fn preallocation_already_appointed_is_not_duplicated() {
+        // The pair is already a committed appointment AND still has a
+        // preallocation row. Seating it again would double-count the seat.
+        let applicants = vec![
+            Applicant::new(1, "Ann".into(), "a@x".into(), vec![]),
+            Applicant::new(2, "Ben".into(), "b@x".into(), vec![PositionIdx(50)]),
+        ];
+        let positions = vec![
+            Position::new(
+                50,
+                Cca::new(1, "C1"),
+                "M".into(),
+                None,
+                2,
+                MainComm,
+                vec![ApplicantIdx(2)],
+            )
+            .with_appointed(1),
+        ];
+        let pool = Pool::new(applicants, positions).with_appointments(Appointments::from_iter([
+            Appointment {
+                applicant: ApplicantIdx(1),
+                position: PositionIdx(50),
+            },
+        ]));
+        let mut preallocations = Preallocations::new();
+        preallocations.grant(ApplicantIdx(1), PositionIdx(50));
+
+        let result = run(&pool, &preallocations);
+        assert!(
+            result.positions_of(ApplicantIdx(1)).is_empty(),
+            "already-appointed pair must not be re-seated"
+        );
+        assert_eq!(
+            result.positions_of(ApplicantIdx(2)),
+            &[PositionIdx(50)],
+            "the one real vacancy stays open to the market"
+        );
+    }
+
+    #[test]
+    fn ia_does_not_double_seat_a_preallocated_preference() {
+        // Ann is preallocated into a blockcomm she also ranked first. The IA
+        // pass must skip the already-held preference instead of seating it twice.
+        let applicants = vec![Applicant::new(
+            1,
+            "Ann".into(),
+            "a@x".into(),
+            vec![PositionIdx(70)],
+        )];
+        let positions = vec![Position::new(
+            70,
+            Cca::new(1, "C1"),
+            "B".into(),
+            None,
+            2,
+            BlockComm,
+            vec![ApplicantIdx(1)],
+        )];
+        let mut preallocations = Preallocations::new();
+        preallocations.grant(ApplicantIdx(1), PositionIdx(70));
+
+        let result = run(&Pool::new(applicants, positions), &preallocations);
+        assert_eq!(result.positions_of(ApplicantIdx(1)), &[PositionIdx(70)]);
+        assert_eq!(
+            result.for_position(PositionIdx(70)).len(),
+            1,
+            "one seat, one allocation"
+        );
+        assert_eq!(
+            result.history(ApplicantIdx(1), PositionIdx(70)).count(),
+            0,
+            "an already-held preference is skipped silently, not rejected"
+        );
+    }
+
+    #[test]
+    fn overfilled_preallocation_does_not_panic_and_blocks_proposals() {
+        // The operator preallocated two residents into a cap-1 blockcomm.
+        // The overfill stands (operator override), and the IA proposer is
+        // turned away without any seat arithmetic underflowing.
+        let applicants = vec![
+            Applicant::new(1, "Ann".into(), "a@x".into(), vec![]),
+            Applicant::new(2, "Ben".into(), "b@x".into(), vec![]),
+            Applicant::new(3, "Cid".into(), "c@x".into(), vec![PositionIdx(80)]),
+        ];
+        let positions = vec![Position::new(
+            80,
+            Cca::new(1, "C1"),
+            "B".into(),
+            None,
+            1,
+            BlockComm,
+            vec![ApplicantIdx(3)],
+        )];
+        let mut preallocations = Preallocations::new();
+        preallocations.grant(ApplicantIdx(1), PositionIdx(80));
+        preallocations.grant(ApplicantIdx(2), PositionIdx(80));
+
+        let result = run(&Pool::new(applicants, positions), &preallocations);
+        assert_eq!(result.for_position(PositionIdx(80)).len(), 2);
+        assert!(
+            result.positions_of(ApplicantIdx(3)).is_empty(),
+            "no seat left for the market"
+        );
+    }
+
+    #[test]
+    fn same_cca_second_position_is_rejected() {
+        // Ann wants a maincomm and a subcomm in the SAME CCA. The type quota
+        // allows both; the one-per-CCA rule does not.
+        let applicants = vec![Applicant::new(
+            1,
+            "Ann".into(),
+            "a@x".into(),
+            vec![PositionIdx(200), PositionIdx(300)],
         )];
         let positions = vec![
             Position::new(
                 200,
-                Cca::new(0, "C"),
+                Cca::new(5, "C5"),
                 "Main".into(),
                 None,
                 1,
@@ -98,17 +324,8 @@ mod tests {
             ),
             Position::new(
                 300,
-                Cca::new(0, "C"),
-                "Sub A".into(),
-                None,
-                1,
-                SubComm,
-                vec![ApplicantIdx(1)],
-            ),
-            Position::new(
-                301,
-                Cca::new(0, "C"),
-                "Sub B".into(),
+                Cca::new(5, "C5"),
+                "Sub".into(),
                 None,
                 1,
                 SubComm,
@@ -116,26 +333,47 @@ mod tests {
             ),
         ];
 
-        // Without an appeal: 301 is rejected on quota.
-        let plain = run(
-            &Pool::new(applicants.clone(), positions.clone()),
-            &Appeals::new(),
+        let result = run(&Pool::new(applicants, positions), &Preallocations::new());
+        assert_eq!(
+            result.positions_of(ApplicantIdx(1)),
+            &[PositionIdx(200)],
+            "second position in the same CCA must be barred"
         );
-        assert!(
-            !plain
-                .positions_of(ApplicantIdx(1))
-                .contains(&PositionIdx(301))
-        );
+    }
 
-        // With an appeal on (1, 301): the quota check is bypassed and 301 is seated.
-        let mut appeals = Appeals::new();
-        appeals.grant(ApplicantIdx(1), PositionIdx(301));
-        let appealed = run(&Pool::new(applicants, positions), &appeals);
-        assert!(
-            appealed
-                .positions_of(ApplicantIdx(1))
-                .contains(&PositionIdx(301))
-        );
+    #[test]
+    fn same_cca_rule_spans_ia_and_gs() {
+        // A blockcomm seated in pass 1 occupies the CCA slot, so the
+        // maincomm proposal in the same CCA is rejected in pass 2.
+        let applicants = vec![Applicant::new(
+            1,
+            "Ann".into(),
+            "a@x".into(),
+            vec![PositionIdx(100), PositionIdx(200)],
+        )];
+        let positions = vec![
+            Position::new(
+                100,
+                Cca::new(5, "C5"),
+                "Block".into(),
+                None,
+                1,
+                BlockComm,
+                vec![ApplicantIdx(1)],
+            ),
+            Position::new(
+                200,
+                Cca::new(5, "C5"),
+                "Main".into(),
+                None,
+                1,
+                MainComm,
+                vec![ApplicantIdx(1)],
+            ),
+        ];
+
+        let result = run(&Pool::new(applicants, positions), &Preallocations::new());
+        assert_eq!(result.positions_of(ApplicantIdx(1)), &[PositionIdx(100)]);
     }
 
     #[test]
@@ -147,7 +385,7 @@ mod tests {
         ];
         let positions = vec![Position::new(
             200,
-            Cca::new(0, "C"),
+            Cca::new(1, "C1"),
             "Main".into(),
             None,
             1,
@@ -155,7 +393,7 @@ mod tests {
             vec![ApplicantIdx(2)],
         )];
 
-        let result = run(&Pool::new(applicants, positions), &Appeals::new());
+        let result = run(&Pool::new(applicants, positions), &Preallocations::new());
         assert!(
             !result
                 .positions_of(ApplicantIdx(1))
@@ -186,19 +424,27 @@ mod tests {
                 vec![PositionIdx(90), PositionIdx(91), PositionIdx(10)],
             ),
         ];
-        let main = |id: i32, ranking: Vec<ApplicantIdx>| {
-            Position::new(id, Cca::new(0, "C"), format!("M{id}"), None, 1, MainComm, ranking)
+        let main = |id: i32, cca: i32, ranking: Vec<ApplicantIdx>| {
+            Position::new(
+                id,
+                Cca::new(cca, format!("C{cca}")),
+                format!("M{id}"),
+                None,
+                1,
+                MainComm,
+                ranking,
+            )
         };
         let positions = vec![
-            main(10, vec![ApplicantIdx(2), ApplicantIdx(1)]), // chair prefers Bea
-            main(11, vec![ApplicantIdx(1)]),
-            main(12, vec![ApplicantIdx(1)]),
-            main(90, vec![]), // ranks nobody
-            main(91, vec![]),
+            main(10, 1, vec![ApplicantIdx(2), ApplicantIdx(1)]), // chair prefers Bea
+            main(11, 2, vec![ApplicantIdx(1)]),
+            main(12, 3, vec![ApplicantIdx(1)]),
+            main(90, 4, vec![]), // ranks nobody
+            main(91, 5, vec![]),
         ];
         let pool = Pool::new(applicants, positions);
 
-        let result = run(&pool, &Appeals::new());
+        let result = run(&pool, &Preallocations::new());
         let ann = result.positions_of(ApplicantIdx(1)).to_vec();
         assert!(
             ann.contains(&PositionIdx(11)) && ann.contains(&PositionIdx(12)),
@@ -230,11 +476,36 @@ mod tests {
                 .collect();
             let ranking: Vec<ApplicantIdx> = (1..=12).map(ApplicantIdx).collect();
             let positions = vec![
-                Position::new(10, Cca::new(0, "C"), "M".into(), None, 2, MainComm, ranking.clone()),
-                Position::new(11, Cca::new(0, "C"), "S".into(), None, 2, SubComm, ranking.clone()),
-                Position::new(12, Cca::new(0, "C"), "B".into(), None, 2, BlockComm, ranking),
+                Position::new(
+                    10,
+                    Cca::new(1, "C1"),
+                    "M".into(),
+                    None,
+                    2,
+                    MainComm,
+                    ranking.clone(),
+                ),
+                Position::new(
+                    11,
+                    Cca::new(2, "C2"),
+                    "S".into(),
+                    None,
+                    2,
+                    SubComm,
+                    ranking.clone(),
+                ),
+                Position::new(12, Cca::new(3, "C3"), "B".into(), None, 2, BlockComm, ranking),
             ];
             Pool::new(applicants, positions)
+        };
+        // Preallocations are HashMap-backed too; several pairs exercise the
+        // seating order.
+        let prealloc = || {
+            let mut p = Preallocations::new();
+            p.grant(ApplicantIdx(11), PositionIdx(10));
+            p.grant(ApplicantIdx(12), PositionIdx(11));
+            p.grant(ApplicantIdx(11), PositionIdx(11));
+            p
         };
 
         let fingerprint = |result: &crate::models::MatchResult| {
@@ -257,9 +528,9 @@ mod tests {
             (allocs, events)
         };
 
-        let first = fingerprint(&run(&build(), &Appeals::new()));
+        let first = fingerprint(&run(&build(), &prealloc()));
         for _ in 0..5 {
-            assert_eq!(fingerprint(&run(&build(), &Appeals::new())), first);
+            assert_eq!(fingerprint(&run(&build(), &prealloc())), first);
         }
     }
 
@@ -280,7 +551,7 @@ mod tests {
         let positions = vec![
             Position::new(
                 30,
-                Cca::new(0, "C"),
+                Cca::new(1, "C1"),
                 "M".into(),
                 None,
                 1,
@@ -289,7 +560,7 @@ mod tests {
             ),
             Position::new(
                 40,
-                Cca::new(0, "C"),
+                Cca::new(2, "C2"),
                 "N".into(),
                 None,
                 1,
@@ -298,7 +569,7 @@ mod tests {
             ), // 1 unranked here
         ];
 
-        let result = run(&Pool::new(applicants, positions), &Appeals::new());
+        let result = run(&Pool::new(applicants, positions), &Preallocations::new());
         assert!(
             result
                 .positions_of(ApplicantIdx(1))
@@ -321,7 +592,7 @@ mod tests {
         ];
         let positions = vec![Position::new(
             50,
-            Cca::new(0, "C"),
+            Cca::new(1, "C1"),
             "B".into(),
             None,
             1,
@@ -329,7 +600,7 @@ mod tests {
             vec![ApplicantIdx(1), ApplicantIdx(2)],
         )];
 
-        let result = run(&Pool::new(applicants, positions), &Appeals::new());
+        let result = run(&Pool::new(applicants, positions), &Preallocations::new());
         assert_eq!(result.positions_of(ApplicantIdx(1)), &[PositionIdx(50)]);
         assert!(result.positions_of(ApplicantIdx(2)).is_empty());
     }
@@ -352,17 +623,17 @@ mod tests {
         let positions = vec![
             Position::new(
                 60,
-                Cca::new(0, "C"),
+                Cca::new(1, "C1"),
                 "B".into(),
                 None,
                 1,
                 BlockComm,
                 vec![ApplicantIdx(2), ApplicantIdx(1)],
             ),
-            Position::new(61, Cca::new(0, "C"), "X".into(), None, 1, BlockComm, vec![]), // ranks nobody
+            Position::new(61, Cca::new(2, "C2"), "X".into(), None, 1, BlockComm, vec![]), // ranks nobody
         ];
 
-        let result = run(&Pool::new(applicants, positions), &Appeals::new());
+        let result = run(&Pool::new(applicants, positions), &Preallocations::new());
         assert_eq!(
             result.positions_of(ApplicantIdx(1)),
             &[PositionIdx(60)],
@@ -387,7 +658,7 @@ mod tests {
         let positions = vec![
             Position::new(
                 70,
-                Cca::new(0, "C"),
+                Cca::new(1, "C1"),
                 "B1".into(),
                 None,
                 1,
@@ -396,7 +667,7 @@ mod tests {
             ),
             Position::new(
                 71,
-                Cca::new(0, "C"),
+                Cca::new(2, "C2"),
                 "B2".into(),
                 None,
                 1,
@@ -405,7 +676,7 @@ mod tests {
             ),
             Position::new(
                 72,
-                Cca::new(0, "C"),
+                Cca::new(3, "C3"),
                 "M".into(),
                 None,
                 1,
@@ -414,7 +685,7 @@ mod tests {
             ),
         ];
 
-        let result = run(&Pool::new(applicants, positions), &Appeals::new());
+        let result = run(&Pool::new(applicants, positions), &Preallocations::new());
         let held = result.positions_of(ApplicantIdx(1));
         assert!(held.contains(&PositionIdx(70)) && held.contains(&PositionIdx(71)));
         assert!(
@@ -435,7 +706,7 @@ mod tests {
         let positions = vec![
             Position::new(
                 50,
-                Cca::new(0, "C"),
+                Cca::new(1, "C1"),
                 "B".into(),
                 None,
                 1,
@@ -451,7 +722,7 @@ mod tests {
             },
         ]));
 
-        let result = run(&pool, &Appeals::new());
+        let result = run(&pool, &Preallocations::new());
         assert!(
             result.positions_of(ApplicantIdx(1)).is_empty(),
             "seat already taken by appointee"
@@ -470,7 +741,7 @@ mod tests {
         let positions = vec![
             Position::new(
                 40,
-                Cca::new(0, "C"),
+                Cca::new(1, "C1"),
                 "M1".into(),
                 None,
                 1,
@@ -480,7 +751,7 @@ mod tests {
             .with_appointed(1),
             Position::new(
                 41,
-                Cca::new(0, "C"),
+                Cca::new(2, "C2"),
                 "M2".into(),
                 None,
                 1,
@@ -490,7 +761,7 @@ mod tests {
             .with_appointed(1),
             Position::new(
                 60,
-                Cca::new(0, "C"),
+                Cca::new(3, "C3"),
                 "M3".into(),
                 None,
                 1,
@@ -509,12 +780,57 @@ mod tests {
             },
         ]));
 
-        let result = run(&pool, &Appeals::new());
+        let result = run(&pool, &Preallocations::new());
         assert!(
             !result
                 .positions_of(ApplicantIdx(1))
                 .contains(&PositionIdx(60)),
             "main+block quota already full from appointments"
+        );
+    }
+
+    #[test]
+    fn appointment_blocks_same_cca_grant() {
+        // Ann already holds an appointment in CCA 5; a different position in
+        // the same CCA must be rejected even though the type quota has room.
+        let applicants = vec![Applicant::new(
+            1,
+            "Ann".into(),
+            "a@x".into(),
+            vec![PositionIdx(60)],
+        )];
+        let positions = vec![
+            Position::new(
+                40,
+                Cca::new(5, "C5"),
+                "M1".into(),
+                None,
+                1,
+                PositionType::MainComm,
+                vec![],
+            )
+            .with_appointed(1),
+            Position::new(
+                60,
+                Cca::new(5, "C5"),
+                "S1".into(),
+                None,
+                1,
+                PositionType::SubComm,
+                vec![ApplicantIdx(1)],
+            ),
+        ];
+        let pool = Pool::new(applicants, positions).with_appointments(Appointments::from_iter([
+            Appointment {
+                applicant: ApplicantIdx(1),
+                position: PositionIdx(40),
+            },
+        ]));
+
+        let result = run(&pool, &Preallocations::new());
+        assert!(
+            result.positions_of(ApplicantIdx(1)).is_empty(),
+            "CCA 5 slot already occupied by the appointment"
         );
     }
 }

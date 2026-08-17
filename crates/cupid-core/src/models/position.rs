@@ -8,7 +8,8 @@ use super::cca::Cca;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PositionIdx(pub i32);
 
-/// CCA Positions
+/// CCA Positions. Only the committee types are cupid's market; every other
+/// `enum.position_type` value is appointed elsewhere and never loaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 // Variants share the "Comm" suffix by design: block / main / sub committee.
 #[allow(clippy::enum_variant_names)]
@@ -133,6 +134,15 @@ mod tests {
         );
         assert_eq!(PositionType::MainComm.algorithm(), Algorithm::GaleShapley);
         assert_eq!(PositionType::SubComm.algorithm(), Algorithm::GaleShapley);
+    }
+
+    #[test]
+    fn appointed_types_do_not_parse() {
+        // Leads, vices and team managers are appointed elsewhere; refusing to
+        // parse them is what keeps them out of the corpus.
+        for raw in ["lead", "vice", "team-manager", "member", "resident"] {
+            assert!(raw.parse::<PositionType>().is_err(), "{raw}");
+        }
     }
 
     #[test]

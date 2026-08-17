@@ -4,6 +4,7 @@
 // from snapshot/idx — this screen never recomputes statuses; "seats filled" reads
 // idx.seatsByPos directly (it already merges committed + run seats server-side).
 import { useState, type ReactNode } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { Button, Card, Icon, StatusPill, TextInput } from "../components/index.ts";
 import { statusStyle } from "../components/statusStyle.ts";
 import { errorMessage } from "../lib/format.ts";
@@ -15,10 +16,13 @@ import { RunPrompt, Section } from "./shared.tsx";
 
 export interface CommitState {
   previewed: boolean;
-  committed: boolean;
+  accessChecked: boolean;
+  exported: boolean;
   archived: boolean;
   purged: boolean;
-  committedCount: number;
+  exportedRows: number;
+  branch: string | null;
+  prUrl: string | null;
   archiveRows: number;
 }
 
@@ -40,24 +44,24 @@ export function Review(props: ReviewProps) {
   const { snapshot, idx, commitState, purgeText, onCommitState, onPurgeText, onOpenMatch, toast, running, onRun, onApplySnapshot } = props;
   const hasRun = snapshot.run !== null;
 
-  // A successful commit consumes the run (the receipt snapshot has run:
-  // null); the stepper must stay visible so archive and purge can follow.
-  if (!hasRun && !commitState.committed) {
+  // After an export the stepper must stay visible even if the corpus is
+  // resynced (run: null), so archive and purge can follow.
+  if (!hasRun && !commitState.exported) {
     return (
       <div style={{ padding: "24px 28px 48px", maxWidth: 1120, margin: "0 auto" }}>
         <h1 style={{ margin: "0 0 4px", fontSize: 22, fontWeight: 700, letterSpacing: "-0.4px", color: "var(--token-color-foreground-strong)" }}>
           Review & commit
         </h1>
         <p style={{ margin: "0 0 18px", fontSize: 13, color: "var(--token-color-foreground-faint)" }}>
-          Review the run, then commit, archive and purge.
+          Review the run, then export the merge request, archive and purge.
         </p>
         <RunPrompt msg="Run matching first, there's nothing to review yet." running={running} onRun={onRun} />
       </div>
     );
   }
 
-  const adds: AssignmentView[] = commitState.committed ? [] : [...idx.newAllocations, ...idx.appealAllocations];
-  const addCount = commitState.committed ? commitState.committedCount : adds.length;
+  const adds: AssignmentView[] = commitState.exported ? [] : [...idx.newAllocations, ...idx.preallocatedAllocations];
+  const addCount = commitState.exported ? commitState.exportedRows : adds.length;
   const totalSeats = snapshot.positions.reduce((s, p) => s + p.capacity, 0);
   let filled = 0;
   idx.seatsByPos.forEach((seated) => {
@@ -80,21 +84,22 @@ export function Review(props: ReviewProps) {
         Review & commit
       </h1>
       <p style={{ margin: "0 0 18px", fontSize: 13, color: "var(--token-color-foreground-faint)", maxWidth: 620 }}>
-        These are the new allocations this run will write. Adds-only — existing appointments are never modified or deleted.
+        These are the new allocations this run will export. Adds-only — existing appointments are never modified or deleted, and
+        nothing is written to the database: the export pushes CSV files as a merge request to the intranet repo.
       </p>
       <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
         <CountPill label="existing committed" value={snapshot.committed.length} color="var(--token-color-foreground-action)" />
-        <CountPill label={commitState.committed ? "committed this run" : "to allocate"} value={`+${addCount}`} color="var(--token-color-foreground-success)" />
+        <CountPill label={commitState.exported ? "exported this run" : "to allocate"} value={`+${addCount}`} color="var(--token-color-foreground-success)" />
         <CountPill label="seats filled" value={`${filled} / ${totalSeats}`} />
       </div>
-      <Section title="Changes to write">
+      <Section title="Changes to export">
         {changedCcas.length ? (
           changedCcas.map((cca) => (
             <DiffGroup key={cca.id} ccaName={cca.name} adds={byCCA.get(cca.id) ?? []} idx={idx} onOpenMatch={onOpenMatch} />
           ))
         ) : (
           <div style={{ fontSize: 12.5, color: "var(--token-color-foreground-faint)", padding: "4px 2px" }}>
-            {commitState.committed ? "All additions have been committed." : "This run proposes no new allocations."}
+            {commitState.exported ? "All additions have been exported." : "This run proposes no new allocations."}
           </div>
         )}
       </Section>
@@ -193,8 +198,8 @@ function DiffRow({
   idx: Indexes;
   onOpenMatch: (aid: number, pid: number) => void;
 }) {
-  const appeal = o.kind === "appealed";
-  const st = statusStyle(appeal ? "appealed" : "allocated");
+  const preallocated = o.kind === "preallocated";
+  const st = statusStyle(preallocated ? "preallocated" : "allocated");
   const applicant = idx.appById.get(o.applicantId);
   const pos = idx.posById.get(o.positionId);
   return (
@@ -227,12 +232,61 @@ function DiffRow({
       >
         {(applicant?.name ?? "") + "  →  " + (pos?.name ?? "")}
       </span>
-      {appeal ? (
+      {preallocated ? (
         <span style={{ fontSize: 11, fontWeight: 700, color: st.fg, fontFamily: "var(--token-typography-font-stack-display)" }}>
-          appeal · exempt
+          preallocated
         </span>
       ) : null}
     </button>
+  );
+}
+
+// ---- merge request link ----------------------------------------------
+// The export's product: presented explicitly, never auto-opened. Opens in
+// the system browser; the URL is also selectable and copyable.
+function MergeRequestLink({ url, toast }: { url: string; toast: ReviewProps["toast"] }) {
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      toast("success", "Merge request URL copied.");
+    } catch {
+      toast("error", "Could not copy the URL — select it manually.");
+    }
+  };
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "10px 12px",
+        borderRadius: 8,
+        background: "var(--token-color-surface-faint)",
+        border: "1px solid var(--token-color-border-faint)",
+        flexWrap: "wrap",
+      }}
+    >
+      <span
+        style={{
+          flex: 1,
+          minWidth: 220,
+          fontSize: 12,
+          fontFamily: "var(--token-typography-font-stack-code)",
+          color: "var(--token-color-foreground-strong)",
+          wordBreak: "break-all",
+          WebkitUserSelect: "all",
+          userSelect: "all",
+        }}
+      >
+        {url}
+      </span>
+      <Button color="primary" icon="external-link" onClick={() => void openUrl(url)}>
+        Open merge request
+      </Button>
+      <Button color="ghost" icon="copy" onClick={() => void copy()}>
+        Copy
+      </Button>
+    </div>
   );
 }
 
@@ -341,7 +395,8 @@ function FinalizeStepper({
   toast: ReviewProps["toast"];
   addCount: number;
 }) {
-  const [busyCommit, setBusyCommit] = useState(false);
+  const [busyCheck, setBusyCheck] = useState(false);
+  const [busyExport, setBusyExport] = useState(false);
   const [busyArchive, setBusyArchive] = useState(false);
   const [busyPurge, setBusyPurge] = useState(false);
   // Not part of commitState: the file path is purely informational for this card's
@@ -354,17 +409,35 @@ function FinalizeStepper({
 
   const confirmPreview = () => onCommitState((prev) => ({ ...prev, previewed: true }));
 
-  const doCommit = async () => {
-    setBusyCommit(true);
+  const doCheckAccess = async () => {
+    setBusyCheck(true);
     try {
-      const receipt = await api.commit();
-      onApplySnapshot(receipt.snapshot);
-      onCommitState((prev) => ({ ...prev, committed: true, committedCount: receipt.inserted }));
-      toast("success", `Committed ${receipt.inserted} appointments.`);
+      const message = await api.checkAccess();
+      onCommitState((prev) => ({ ...prev, accessChecked: true }));
+      toast("success", message);
     } catch (e) {
       toast("error", errorMessage(e));
     } finally {
-      setBusyCommit(false);
+      setBusyCheck(false);
+    }
+  };
+
+  const doExport = async () => {
+    setBusyExport(true);
+    try {
+      const receipt = await api.commit();
+      onCommitState((prev) => ({
+        ...prev,
+        exported: true,
+        exportedRows: receipt.rows,
+        branch: receipt.branch,
+        prUrl: receipt.prUrl,
+      }));
+      toast("success", `Pushed ${receipt.rows} appointments on ${receipt.branch}.`);
+    } catch (e) {
+      toast("error", errorMessage(e));
+    } finally {
+      setBusyExport(false);
     }
   };
 
@@ -408,36 +481,70 @@ function FinalizeStepper({
         )}
       </CommitCard>
 
-      <CommitCard n={2} title="Commit additions" done={commitState.committed} locked={!commitState.previewed}>
-        {commitState.committed ? (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 7,
-              fontSize: 13,
-              fontWeight: 600,
-              color: "var(--token-color-foreground-success-on-surface)",
-            }}
-          >
-            <Icon name="check-circle" size={15} color="var(--token-color-foreground-success)" />
-            {commitState.committedCount} additions committed.
+      <CommitCard n={2} title="Export & open merge request" done={commitState.exported} locked={!commitState.previewed}>
+        {commitState.exported ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 7,
+                fontSize: 13,
+                fontWeight: 600,
+                color: "var(--token-color-foreground-success-on-surface)",
+              }}
+            >
+              <Icon name="check-circle" size={15} color="var(--token-color-foreground-success)" />
+              {commitState.exportedRows} additions pushed on {commitState.branch}.
+            </div>
+            {commitState.prUrl ? <MergeRequestLink url={commitState.prUrl} toast={toast} /> : null}
+            <div style={{ fontSize: 12.5, color: "var(--token-color-foreground-faint)" }}>
+              Open the merge request and get it merged — intranet's CI writes the appointments. They appear here after the
+              next sync.
+            </div>
           </div>
         ) : (
           <>
             <div style={{ fontSize: 13, color: "var(--token-color-foreground-primary)", marginBottom: 12 }}>
-              Writes {addCount} new appointment{addCount === 1 ? "" : "s"}. Existing appointments are untouched.
+              Exports {addCount} new appointment{addCount === 1 ? "" : "s"} as CSV and pushes a branch to the intranet repo.
+              Nothing is written to the database.
             </div>
-            <Button color="primary" busy={busyCommit} onClick={doCommit}>
-              Commit {addCount} addition{addCount === 1 ? "" : "s"}
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+              {commitState.accessChecked ? (
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 7,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    color: "var(--token-color-foreground-success-on-surface)",
+                  }}
+                >
+                  <Icon name="check-circle" size={15} color="var(--token-color-foreground-success)" />
+                  Push access verified.
+                </span>
+              ) : (
+                <>
+                  <Button color="ghost" icon="lock" busy={busyCheck} onClick={doCheckAccess}>
+                    Check SSH access
+                  </Button>
+                  <span style={{ fontSize: 12.5, color: "var(--token-color-foreground-faint)" }}>
+                    Verifies this machine's SSH key can push to the intranet repo. Nothing is cloned or pushed yet.
+                  </span>
+                </>
+              )}
+            </div>
+            <Button color="primary" busy={busyExport} disabled={!commitState.accessChecked} onClick={doExport}>
+              Export {addCount} addition{addCount === 1 ? "" : "s"}
             </Button>
           </>
         )}
       </CommitCard>
 
-      <CommitCard n={3} title="Archive a verified backup" done={commitState.archived} locked={!commitState.committed} danger>
+      <CommitCard n={3} title="Archive a verified backup" done={commitState.archived} locked={!commitState.exported} danger>
         <div style={{ fontSize: 13, color: "var(--token-color-foreground-primary)", marginBottom: 12 }}>
-          Export a complete backup of all preference, ranking and appeal data <strong>before</strong> purging.
+          Export a complete backup of all preference, ranking and preallocation data <strong>before</strong> purging.
         </div>
         <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
           <CountPill label="applicants" value={snapshot.applicants.length} />
@@ -502,8 +609,11 @@ function FinalizeStepper({
             >
               <Icon name="alert-triangle" size={18} color="var(--token-color-foreground-critical-on-surface)" />
               <div style={{ fontSize: 12.5, color: "var(--token-color-foreground-critical-on-surface)", lineHeight: 1.5 }}>
-                <strong>Permanently deletes all {totalRows} preference & ranking rows, plus every appeal. </strong>
-                Cannot be undone. Make sure your archive downloaded.
+                <strong>
+                  Permanently deletes all {totalRows} preference & ranking rows from the database, plus every local
+                  preallocation.{" "}
+                </strong>
+                Cannot be undone. Make sure your archive downloaded and the merge request is on its way.
               </div>
             </div>
             <div style={{ maxWidth: 280, marginBottom: 14 }}>

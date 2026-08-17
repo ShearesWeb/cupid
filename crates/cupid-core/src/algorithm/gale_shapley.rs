@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use crate::models::{
-    Appeals, Applicant, ApplicantIdx, CapacityStore, Ledger, Position, PositionIdx, RejectReason,
-    Roster,
+    Applicant, ApplicantIdx, CapacityStore, Ledger, Position, PositionIdx, Preallocations,
+    RejectReason, Roster,
 };
 
 /// Pass 2 — Gale-Shapley (applicant-proposing deferred acceptance) over
@@ -15,9 +15,17 @@ use crate::models::{
 /// acceptance must then revisit them. Only position-side verdicts
 /// (chair unranked, seat lost to better-ranked applicants) are permanent.
 ///
+/// Preallocated holders were seated before this pass and can never be
+/// displaced by a proposal.
+///
 /// Applicants are swept in id order so identical inputs always produce the
 /// identical result, event for event.
-pub fn run(pool: &Roster, appeals: &Appeals, store: &mut CapacityStore, ledger: &mut Ledger) {
+pub fn run(
+    pool: &Roster,
+    preallocations: &Preallocations,
+    store: &mut CapacityStore,
+    ledger: &mut Ledger,
+) {
     let mut applicants: Vec<&Applicant> = pool.applicants().collect();
     applicants.sort_by_key(|a| a.id.0);
 
@@ -29,12 +37,12 @@ pub fn run(pool: &Roster, appeals: &Appeals, store: &mut CapacityStore, ledger: 
         let mut progressed = false;
 
         for applicant in &applicants {
-            let Some(position) = target(applicant, pool, appeals, store, ledger, &settled) else {
+            let Some(position) = target(applicant, pool, store, ledger, &settled) else {
                 continue;
             };
             progressed = true;
 
-            match propose(applicant, position, appeals, store, ledger) {
+            match propose(applicant, position, preallocations, store, ledger) {
                 Proposal::Seated { displaced } => {
                     if let Some(loser) = displaced {
                         // The bump proves every remaining holder outranks the
@@ -64,9 +72,7 @@ pub fn run(pool: &Roster, appeals: &Appeals, store: &mut CapacityStore, ledger: 
             if settled.contains(&(applicant.id, pid)) || holds(ledger, applicant.id, pid) {
                 continue;
             }
-            if !appeals.contains(applicant.id, pid)
-                && !store.can_grant(applicant.id, position.position_type)
-            {
+            if !store.can_grant(applicant.id, position.position_type, position.cca.id) {
                 ledger.reject(applicant.id, pid, RejectReason::ApplicantCapacityFull);
             }
         }
@@ -77,7 +83,6 @@ pub fn run(pool: &Roster, appeals: &Appeals, store: &mut CapacityStore, ledger: 
 fn target<'a>(
     applicant: &Applicant,
     pool: &Roster<'a>,
-    appeals: &Appeals,
     store: &CapacityStore,
     ledger: &Ledger,
     settled: &HashSet<(ApplicantIdx, PositionIdx)>,
@@ -87,9 +92,8 @@ fn target<'a>(
         if settled.contains(&(applicant.id, pid)) || holds(ledger, applicant.id, pid) {
             return None;
         }
-        let appealed = appeals.contains(applicant.id, pid);
         // Quota-blocked: skip without settling; a displacement may free it.
-        if !appealed && !store.can_grant(applicant.id, position.position_type) {
+        if !store.can_grant(applicant.id, position.position_type, position.cca.id) {
             return None;
         }
         Some(position)
@@ -109,7 +113,7 @@ enum Proposal {
 fn propose(
     applicant: &Applicant,
     position: &Position,
-    appeals: &Appeals,
+    preallocations: &Preallocations,
     store: &mut CapacityStore,
     ledger: &mut Ledger,
 ) -> Proposal {
@@ -118,36 +122,35 @@ fn propose(
         return Proposal::Rejected;
     }
 
-    let appealed = appeals.contains(applicant.id, position.id);
-
     // Role capacity not reached: tentatively accept.
     if ledger.holder_count(position.id) < position.vacancies() {
-        store.grant(applicant.id, position.position_type, appealed);
+        store.grant(applicant.id, position.position_type, position.cca.id);
         ledger.accept(applicant, position);
         return Proposal::Seated { displaced: None };
     }
 
     // Role capacity is full -> find the weakest currently-held seat.
+    // Preallocated holders own their seats outright and are never displaced.
     let applicant_rank = position.rank_of(applicant.id).unwrap_or(usize::MAX);
 
-    let holders = ledger.holders(position.id);
-    if holders.is_empty() {
-        // All seats are occupied by pre-existing appointments; no one to displace.
+    let loser = ledger
+        .holders(position.id)
+        .into_iter()
+        .filter(|&h| !preallocations.contains(h, position.id))
+        .max_by_key(|&h| position.rank_of(h).unwrap_or(usize::MAX));
+
+    // Every seat is held by an appointment or a preallocation; no one to displace.
+    let Some(loser) = loser else {
         ledger.reject(applicant.id, position.id, RejectReason::RoleCapacityFull);
         return Proposal::Rejected;
-    }
-
-    let loser = holders
-        .into_iter()
-        .max_by_key(|&h| position.rank_of(h).unwrap_or(usize::MAX))
-        .unwrap();
+    };
 
     let worst_rank = position.rank_of(loser).unwrap_or(usize::MAX);
 
     // Applicant outranks the weakest held: BUMP.
     if applicant_rank < worst_rank {
-        store.revoke(loser, position.position_type, appeals.contains(loser, position.id));
-        store.grant(applicant.id, position.position_type, appealed);
+        store.revoke(loser, position.position_type, position.cca.id);
+        store.grant(applicant.id, position.position_type, position.cca.id);
         ledger.bump(applicant, loser, position);
         return Proposal::Seated { displaced: Some(loser) };
     }

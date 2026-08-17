@@ -59,25 +59,35 @@ export function RunPrompt({ msg, running, onRun }: { msg: string; running: boole
   );
 }
 
-const PRE_RUN_LEGEND: [Status, string][] = [
+// Seats are only ever existing/allocated/preallocated: the allocations
+// screen colours seats, so its legend stops there.
+const SEAT_LEGEND: [Status, string][] = [
   ["existing", "Existing appointment"],
   ["allocated", "New allocation"],
-  ["appealed", "Appeal (exempt)"],
+  ["preallocated", "Preallocated"],
 ];
 
-const POST_RUN_LEGEND: [Status, string][] = [
+// The ranked lists on the detail pages also show why someone is NOT seated.
+const OUTCOME_LEGEND: [Status, string][] = [
   ["existing", "Existing"],
   ["allocated", "New allocation"],
-  ["appealed", "Appeal (exempt)"],
+  ["preallocated", "Preallocated"],
   ["displaced", "Displaced"],
   ["quota", "Quota-blocked"],
   ["noreturn", "Didn't rank back"],
 ];
 
-export function Legend({ hasRun }: { hasRun: boolean }) {
-  const items = hasRun ? POST_RUN_LEGEND : PRE_RUN_LEGEND;
+export function Legend() {
+  return <LegendRow items={SEAT_LEGEND} />;
+}
+
+export function OutcomeLegend() {
+  return <LegendRow items={OUTCOME_LEGEND} />;
+}
+
+function LegendRow({ items }: { items: [Status, string][] }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap", rowGap: 8 }}>
       {items.map(([s, label]) => {
         const st = statusStyle(s);
         return (
