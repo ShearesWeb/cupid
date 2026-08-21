@@ -20,11 +20,17 @@ export const runMatching = (): Promise<Snapshot> => invoke("run_matching");
 /// line; rejects with operator guidance when the key or permission is missing.
 export const checkAccess = (): Promise<string> => invoke("check_access");
 
-export const commit = (): Promise<ExportReceipt> => invoke("commit");
+/// Export the run's new allocations. `excluded` holds back whole positions:
+/// their seats stay out of the merge request. Pass the same list to `purge`.
+export const commit = (excluded: number[]): Promise<ExportReceipt> =>
+  invoke("commit", { excluded });
 
 export const archive = (): Promise<{ path: string; rows: number }> => invoke("archive");
 
-export const purge = (): Promise<PurgeReceipt> => invoke("purge");
+/// Delete the cycle's preference rows and preallocations. Positions in
+/// `excluded` keep theirs — pass the list the export was given.
+export const purge = (excluded: number[]): Promise<PurgeReceipt> =>
+  invoke("purge", { excluded });
 
 export const addPreallocation = (
   applicantId: number,

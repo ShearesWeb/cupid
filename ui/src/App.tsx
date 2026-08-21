@@ -41,6 +41,7 @@ const initialCommitState: CommitState = {
   branch: null,
   prUrl: null,
   archiveRows: 0,
+  excluded: [],
 };
 
 export interface UiState {

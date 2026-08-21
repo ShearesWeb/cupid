@@ -1,8 +1,9 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use cupid::data::conn::ConnSpec;
 use cupid::data::preallocations::{self, PreallocationRecord};
-use cupid::models::{ApplicantIdx, PositionIdx};
+use cupid::models::{ApplicantIdx, Pool, PositionIdx};
 use cupid::snapshot::Snapshot;
 use tauri::State;
 use tauri_plugin_dialog::DialogExt;
@@ -192,21 +193,59 @@ pub async fn check_access() -> Result<String, String> {
     Ok("SSH push access to ShearesWeb/intranet verified.".to_string())
 }
 
+/// Resolve the operator's held-back position ids against the corpus. An id
+/// the engine does not know means the console and the corpus have diverged;
+/// silently ignoring it would export a position the operator held back, or
+/// purge preferences they meant to keep.
+fn excluded_set(pool: &Pool, excluded: &[i32]) -> Result<HashSet<PositionIdx>, String> {
+    excluded
+        .iter()
+        .map(|&id| {
+            pool.position(PositionIdx(id))
+                .map(|_| PositionIdx(id))
+                .ok_or_else(|| format!("Unknown position in the exclusion list: {id}."))
+        })
+        .collect()
+}
+
+/// The preallocations that survive a purge: those on positions the operator
+/// held back. Every other record is an input to the cycle that just ended.
+fn retained_preallocations(
+    records: &[PreallocationRecord],
+    excluded: &HashSet<PositionIdx>,
+) -> Vec<PreallocationRecord> {
+    records
+        .iter()
+        .filter(|r| excluded.contains(&PositionIdx(r.position_id)))
+        .cloned()
+        .collect()
+}
+
 /// Export the run's new allocations as CSVs and push them to the intranet
 /// repo: every settled allocation — preallocated seats included — that is not
 /// already an existing appointment becomes a row in cupid's per-CCA files
-/// under `data/cca-appointment/allocation/`. Nothing is written to the
-/// database; the receipt carries the merge-request URL the operator must open
-/// to land the change. The run is kept: appointments show up on the next sync
-/// after the MR merges.
+/// under `data/cca-appointment/allocation/`. Positions listed in `excluded`
+/// are held back: their seats stay out of the export, and `purge` must be
+/// given the same list so their preferences survive into the next cycle.
+/// Nothing is written to the database; the receipt carries the merge-request
+/// URL the operator must open to land the change. The run is kept:
+/// appointments show up on the next sync after the MR merges.
 #[tauri::command]
-pub async fn commit(state: State<'_, AppState>) -> Result<ExportReceipt, String> {
+pub async fn commit(
+    state: State<'_, AppState>,
+    excluded: Vec<i32>,
+) -> Result<ExportReceipt, String> {
     let guard = state.inputs.lock().await;
     let inputs = guard.as_ref().ok_or("Sync first: no corpus loaded.")?;
     let result = inputs.last_result.as_ref().ok_or("Run matching first: nothing to export.")?;
-    let rows = cupid::export::rows_from(result, &inputs.pool);
+    let excluded = excluded_set(&inputs.pool, &excluded)?;
+    let rows = cupid::export::rows_from(result, &inputs.pool, &excluded);
     if rows.is_empty() {
-        return Err("Nothing to export: the run adds no new appointments.".to_string());
+        return Err(if excluded.is_empty() {
+            "Nothing to export: the run adds no new appointments.".to_string()
+        } else {
+            "Nothing to export: every new appointment is on an excluded position.".to_string()
+        });
     }
 
     let row_count = rows.len();
@@ -255,33 +294,44 @@ pub async fn archive(app: tauri::AppHandle, state: State<'_, AppState>) -> Resul
     Ok(ArchiveReceipt { path: path.display().to_string(), rows })
 }
 
-/// Permanently delete every preference row in the database AND every local
-/// preallocation: both are inputs to the allocation cycle that just ended,
-/// and neither may leak into the next one. This is cupid's one write path —
-/// it opens the sole read-write connection. The corpus is reloaded afterwards
-/// so the returned snapshot reflects the emptied market. Irreversible; the UI
-/// gates this behind a completed export + archive and a typed confirmation.
+/// Permanently delete the preference rows in the database AND the local
+/// preallocations belonging to the allocation cycle that just ended, so
+/// neither leaks into the next one. Positions listed in `excluded` are held
+/// back: their preference rows, chair rankings and preallocations survive
+/// untouched, which is what lets an operator re-run a single role later. Pass
+/// the same list `commit` was given. This is cupid's one write path — it opens
+/// the sole read-write connection. The corpus is reloaded afterwards so the
+/// returned snapshot reflects the emptied market. Irreversible; the UI gates
+/// this behind a completed export + archive and a typed confirmation.
 #[tauri::command]
-pub async fn purge(state: State<'_, AppState>) -> Result<PurgeReceipt, String> {
+pub async fn purge(
+    state: State<'_, AppState>,
+    excluded: Vec<i32>,
+) -> Result<PurgeReceipt, String> {
     let mut guard = state.inputs.lock().await;
     let spec = spec_of(&state).await?;
-    guard.as_ref().ok_or("Sync first: no corpus loaded.")?;
+    let inputs = guard.as_ref().ok_or("Sync first: no corpus loaded.")?;
+    let excluded = excluded_set(&inputs.pool, &excluded)?;
+    let retained = retained_preallocations(&inputs.records, &excluded);
 
+    // `<> ALL` rather than `= ANY` over the kept ids: an empty exclusion list
+    // then still clears the table outright, orphan rows included.
+    let held: Vec<i32> = excluded.iter().map(|p| p.0).collect();
     let deleted = block_in_place(|| -> Result<u64, String> {
         let mut client = spec.connect_read_write().map_err(|e| e.to_string())?;
         let mut tx = client.transaction().map_err(|e| e.to_string())?;
         let user_rows = tx
-            .execute("DELETE FROM preferred_positions", &[])
+            .execute("DELETE FROM preferred_positions WHERE position_id <> ALL($1)", &[&held])
             .map_err(|e| e.to_string())?;
         let position_rows = tx
-            .execute("DELETE FROM preferred_candidates", &[])
+            .execute("DELETE FROM preferred_candidates WHERE position_id <> ALL($1)", &[&held])
             .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
         Ok(user_rows + position_rows)
     })?;
 
     let store = state.store_path();
-    preallocations::write_file(&store, &[]).map_err(|e| e.to_string())?;
+    preallocations::write_file(&store, &retained).map_err(|e| e.to_string())?;
 
     let fresh = block_in_place(|| load_inputs(&spec, &store))?;
     *guard = Some(fresh);
@@ -292,6 +342,47 @@ pub async fn purge(state: State<'_, AppState>) -> Result<PurgeReceipt, String> {
 mod tests {
     use super::*;
     use cupid::models::*;
+
+    fn two_position_pool() -> Pool {
+        let positions = vec![
+            Position::new(10, Cca::new(1, "C"), "Chair".into(), None, 1,
+                PositionType::MainComm, vec![]),
+            Position::new(20, Cca::new(1, "C"), "Vice".into(), None, 1,
+                PositionType::MainComm, vec![]),
+        ];
+        Pool::new(vec![Applicant::new(1, "A".into(), "a@x".into(), vec![])], positions)
+    }
+
+    fn record(position_id: i32) -> PreallocationRecord {
+        PreallocationRecord { user_id: 1, position_id, note: None }
+    }
+
+    #[test]
+    fn excluded_set_resolves_known_positions() {
+        let set = excluded_set(&two_position_pool(), &[20]).unwrap();
+        assert_eq!(set, HashSet::from([PositionIdx(20)]));
+    }
+
+    #[test]
+    fn excluded_set_rejects_a_position_outside_the_corpus() {
+        let err = excluded_set(&two_position_pool(), &[99]).unwrap_err();
+        assert!(err.contains("99"), "the error names the bad id: {err}");
+    }
+
+    #[test]
+    fn purge_keeps_preallocations_on_excluded_positions_only() {
+        let records = vec![record(10), record(20)];
+        assert_eq!(
+            retained_preallocations(&records, &HashSet::from([PositionIdx(20)])),
+            vec![record(20)]
+        );
+    }
+
+    #[test]
+    fn purge_with_nothing_excluded_keeps_no_preallocations() {
+        let records = vec![record(10), record(20)];
+        assert_eq!(retained_preallocations(&records, &HashSet::new()), vec![]);
+    }
 
     #[test]
     fn archive_rows_counts_prefs_plus_rankings() {
