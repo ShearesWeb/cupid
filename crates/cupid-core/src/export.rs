@@ -2,9 +2,9 @@
 //! repo's `data/cca-appointment` CSV convention. Pure logic only — the git
 //! plumbing that publishes these files lives in the desktop shell.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
-use crate::models::{MatchResult, Pool};
+use crate::models::{MatchResult, Pool, PositionIdx};
 
 /// Header shared by every intranet `cca-appointment` CSV.
 pub const HEADER: &str = "user_email,cca_name,position_name,commitment_period";
@@ -21,11 +21,17 @@ pub struct AppointmentRow {
 }
 
 /// The run's new appointments as CSV rows: every settled allocation —
-/// preallocated seats included — that is not already an existing appointment.
+/// preallocated seats included — that is not already an existing appointment
+/// and whose position the operator did not hold back in `excluded`.
 /// Sorted by (cca, position, email); adds-only by construction.
-pub fn rows_from(result: &MatchResult, pool: &Pool) -> Vec<AppointmentRow> {
+pub fn rows_from(
+    result: &MatchResult,
+    pool: &Pool,
+    excluded: &HashSet<PositionIdx>,
+) -> Vec<AppointmentRow> {
     let mut rows: Vec<AppointmentRow> = result
         .all()
+        .filter(|a| !excluded.contains(&a.position_id))
         .filter(|a| !pool.appointments().held_by(a.applicant_id).contains(&a.position_id))
         .filter_map(|a| {
             let applicant = pool.applicant(a.applicant_id)?;
@@ -143,7 +149,7 @@ mod tests {
         ledger.accept(&applicants[0], &positions[0]);
         ledger.accept(&applicants[1], &positions[0]);
 
-        let rows = rows_from(&ledger.finish(), &pool);
+        let rows = rows_from(&ledger.finish(), &pool, &HashSet::new());
         assert_eq!(rows, vec![row("Sheares Media", "Chair", "ann@x")]);
     }
 
@@ -165,7 +171,7 @@ mod tests {
         ledger.accept(&applicants[0], &positions[1]);
         ledger.accept(&applicants[1], &positions[1]);
 
-        let rows = rows_from(&ledger.finish(), &pool);
+        let rows = rows_from(&ledger.finish(), &pool, &HashSet::new());
         assert_eq!(rows, vec![
             row("Alpha", "Chair", "a@x"),
             row("Alpha", "Chair", "b@x"),
@@ -185,7 +191,47 @@ mod tests {
         preallocations.grant(ApplicantIdx(1), PositionIdx(10));
 
         let result = crate::algorithm::run(&pool, &preallocations);
-        assert_eq!(rows_from(&result, &pool), vec![row("Club", "Chair", "ann@x")]);
+        assert_eq!(rows_from(&result, &pool, &HashSet::new()), vec![row("Club", "Chair", "ann@x")]);
+    }
+
+    #[test]
+    fn rows_omit_excluded_positions() {
+        let positions = vec![
+            Position::new(10, Cca::new(1, "Alpha"), "Chair".into(), None, 1,
+                PositionType::MainComm, vec![ApplicantIdx(1)]),
+            Position::new(20, Cca::new(1, "Alpha"), "Vice".into(), None, 1,
+                PositionType::MainComm, vec![ApplicantIdx(2)]),
+        ];
+        let applicants = vec![
+            Applicant::new(1, "Ann".into(), "ann@x".into(), vec![PositionIdx(10)]),
+            Applicant::new(2, "Ben".into(), "ben@x".into(), vec![PositionIdx(20)]),
+        ];
+        let pool = Pool::new(applicants.clone(), positions.clone());
+        let mut ledger = Ledger::new(Algorithm::GaleShapley);
+        ledger.accept(&applicants[0], &positions[0]);
+        ledger.accept(&applicants[1], &positions[1]);
+        let result = ledger.finish();
+
+        let excluded = HashSet::from([PositionIdx(20)]);
+        assert_eq!(
+            rows_from(&result, &pool, &excluded),
+            vec![row("Alpha", "Chair", "ann@x")],
+            "the excluded position contributes no rows"
+        );
+    }
+
+    #[test]
+    fn excluding_a_position_also_holds_back_its_preallocated_seats() {
+        let positions = vec![Position::new(10, Cca::new(1, "Club"), "Chair".into(), None, 1,
+            PositionType::MainComm, vec![])];
+        let applicants = vec![Applicant::new(1, "Ann".into(), "ann@x".into(), vec![])];
+        let pool = Pool::new(applicants, positions);
+        let mut preallocations = crate::models::Preallocations::new();
+        preallocations.grant(ApplicantIdx(1), PositionIdx(10));
+
+        let result = crate::algorithm::run(&pool, &preallocations);
+        let excluded = HashSet::from([PositionIdx(10)]);
+        assert_eq!(rows_from(&result, &pool, &excluded), vec![]);
     }
 
     #[test]

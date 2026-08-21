@@ -10,12 +10,16 @@ import { statusStyle } from "../components/statusStyle.ts";
 import { errorMessage } from "../lib/format.ts";
 import * as api from "../lib/api.ts";
 import type { Indexes } from "../lib/indexes.ts";
+import { groupAdds, heldBackRows, includedAdds, type CcaGroup } from "../lib/selection.ts";
 import type { AssignmentView, Snapshot } from "../lib/types.ts";
 import type { ToastKind } from "../components/Toasts.tsx";
 import { RunPrompt, Section } from "./shared.tsx";
 
 export interface CommitState {
   previewed: boolean;
+  /// Positions the operator held back this cycle. Scopes both the export and
+  /// the purge, so a role that is not finalised keeps its preference data.
+  excluded: number[];
   accessChecked: boolean;
   exported: boolean;
   archived: boolean;
@@ -61,22 +65,28 @@ export function Review(props: ReviewProps) {
   }
 
   const adds: AssignmentView[] = commitState.exported ? [] : [...idx.newAllocations, ...idx.preallocatedAllocations];
-  const addCount = commitState.exported ? commitState.exportedRows : adds.length;
+  const excluded = new Set(commitState.excluded);
+  const addCount = commitState.exported ? commitState.exportedRows : includedAdds(adds, excluded).length;
   const totalSeats = snapshot.positions.reduce((s, p) => s + p.capacity, 0);
   let filled = 0;
   idx.seatsByPos.forEach((seated) => {
     filled += seated.length;
   });
 
-  const byCCA = new Map<number, AssignmentView[]>();
-  for (const o of adds) {
-    const pos = idx.posById.get(o.positionId);
-    if (!pos) continue;
-    const list = byCCA.get(pos.ccaId);
-    if (list) list.push(o);
-    else byCCA.set(pos.ccaId, [o]);
-  }
-  const changedCcas = snapshot.ccas.filter((c) => (byCCA.get(c.id)?.length ?? 0) > 0);
+  const groups = groupAdds(adds, snapshot);
+  const heldBackCount = adds.length - addCount;
+
+  // The export and the purge must agree on what was held back, so the
+  // checklist freezes the moment the branch is pushed.
+  const togglePositions = (ids: number[], include: boolean) =>
+    onCommitState((prev) => {
+      const next = new Set(prev.excluded);
+      for (const id of ids) {
+        if (include) next.delete(id);
+        else next.add(id);
+      }
+      return { ...prev, excluded: [...next] };
+    });
 
   return (
     <div style={{ padding: "24px 28px 48px", maxWidth: 1120, margin: "0 auto" }}>
@@ -93,10 +103,30 @@ export function Review(props: ReviewProps) {
         <CountPill label="seats filled" value={`${filled} / ${totalSeats}`} />
       </div>
       <Section title="Changes to export">
-        {changedCcas.length ? (
-          changedCcas.map((cca) => (
-            <DiffGroup key={cca.id} ccaName={cca.name} adds={byCCA.get(cca.id) ?? []} idx={idx} onOpenMatch={onOpenMatch} />
-          ))
+        {groups.length ? (
+          <>
+            <div style={{ fontSize: 12.5, color: "var(--token-color-foreground-faint)", marginTop: -4, marginBottom: 10 }}>
+              Untick a position to hold it back: its seats stay out of the merge request and its preference data survives
+              the purge, ready for a later cycle.
+              {heldBackCount > 0 ? (
+                <strong style={{ color: "var(--token-color-foreground-warning-on-surface)" }}>
+                  {" "}
+                  {heldBackCount} addition{heldBackCount === 1 ? "" : "s"} held back.
+                </strong>
+              ) : null}
+            </div>
+            {groups.map((group) => (
+              <DiffGroup
+                key={group.ccaId}
+                group={group}
+                idx={idx}
+                excluded={excluded}
+                locked={commitState.exported}
+                onToggle={togglePositions}
+                onOpenMatch={onOpenMatch}
+              />
+            ))}
+          </>
         ) : (
           <div style={{ fontSize: 12.5, color: "var(--token-color-foreground-faint)", padding: "4px 2px" }}>
             {commitState.exported ? "All additions have been exported." : "This run proposes no new allocations."}
@@ -152,18 +182,73 @@ export function CountPill({ label, value, color }: { label: string; value: strin
   );
 }
 
-// ---- diff (grouped by CCA) -------------------------------------------
+// ---- include/exclude checkbox ----------------------------------------
+// Tri-state: a CCA whose positions are only partly held back shows a bar
+// rather than a tick. No native input — `indeterminate` is a DOM property
+// with no JSX attribute, and the visual is two tokens either way.
+function Checkbox({
+  state,
+  disabled,
+  label,
+  onClick,
+}: {
+  state: "on" | "off" | "mixed";
+  disabled: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  const filled = state !== "off";
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={state === "mixed" ? "mixed" : state === "on"}
+      aria-label={label}
+      disabled={disabled}
+      onClick={onClick}
+      style={{
+        width: 15,
+        height: 15,
+        flex: "0 0 15px",
+        padding: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: 4,
+        border: `1px solid ${filled ? "var(--token-color-border-action)" : "var(--token-color-border-strong)"}`,
+        background: filled ? "var(--token-color-foreground-action)" : "var(--token-color-surface-primary)",
+        opacity: disabled ? 0.5 : 1,
+        cursor: disabled ? "default" : "pointer",
+      }}
+    >
+      {state === "on" ? <Icon name="check" size={11} color="#fff" /> : null}
+      {state === "mixed" ? <span style={{ width: 7, height: 2, borderRadius: 1, background: "#fff" }} /> : null}
+    </button>
+  );
+}
+
+// ---- diff (grouped by CCA, then position) ----------------------------
 function DiffGroup({
-  ccaName,
-  adds,
+  group,
   idx,
+  excluded,
+  locked,
+  onToggle,
   onOpenMatch,
 }: {
-  ccaName: string;
-  adds: AssignmentView[];
+  group: CcaGroup;
   idx: Indexes;
+  excluded: Set<number>;
+  locked: boolean;
+  onToggle: (ids: number[], include: boolean) => void;
   onOpenMatch: (aid: number, pid: number) => void;
 }) {
+  const ids = group.positions.map((p) => p.positionId);
+  const includedIds = ids.filter((id) => !excluded.has(id));
+  const state = includedIds.length === 0 ? "off" : includedIds.length === ids.length ? "on" : "mixed";
+  const includedCount = group.positions
+    .filter((p) => !excluded.has(p.positionId))
+    .reduce((n, p) => n + p.adds.length, 0);
   return (
     <Card padding="none" style={{ overflow: "hidden", marginBottom: 10 }}>
       <div
@@ -178,28 +263,103 @@ function DiffGroup({
           fontSize: 12.5,
         }}
       >
+        <Checkbox
+          state={state}
+          disabled={locked}
+          label={`Include every ${group.name} position`}
+          onClick={() => onToggle(ids, state !== "on")}
+        />
         <Icon name="folder" size={14} color="var(--token-color-foreground-faint)" />
-        <span style={{ fontWeight: 700, color: "var(--token-color-foreground-strong)" }}>{ccaName}</span>
-        <span style={{ color: "var(--token-color-foreground-success)", fontWeight: 700 }}>+{adds.length}</span>
+        <span style={{ fontWeight: 700, color: "var(--token-color-foreground-strong)" }}>{group.name}</span>
+        <span style={{ color: "var(--token-color-foreground-success)", fontWeight: 700 }}>+{includedCount}</span>
+        {includedCount < group.addCount ? (
+          <span style={{ color: "var(--token-color-foreground-faint)" }}>of +{group.addCount}</span>
+        ) : null}
       </div>
-      {adds.map((o) => (
-        <DiffRow key={`${o.applicantId}|${o.positionId}`} o={o} idx={idx} onOpenMatch={onOpenMatch} />
+      {group.positions.map((position) => (
+        <DiffPosition
+          key={position.positionId}
+          position={position}
+          idx={idx}
+          held={excluded.has(position.positionId)}
+          locked={locked}
+          onToggle={onToggle}
+          onOpenMatch={onOpenMatch}
+        />
       ))}
     </Card>
+  );
+}
+
+function DiffPosition({
+  position,
+  idx,
+  held,
+  locked,
+  onToggle,
+  onOpenMatch,
+}: {
+  position: CcaGroup["positions"][number];
+  idx: Indexes;
+  held: boolean;
+  locked: boolean;
+  onToggle: (ids: number[], include: boolean) => void;
+  onOpenMatch: (aid: number, pid: number) => void;
+}) {
+  return (
+    <>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 9,
+          padding: "6px 14px 6px 28px",
+          borderBottom: "1px solid var(--token-color-border-faint)",
+          fontFamily: "var(--token-typography-font-stack-code)",
+          fontSize: 12,
+          color: "var(--token-color-foreground-faint)",
+        }}
+      >
+        <Checkbox
+          state={held ? "off" : "on"}
+          disabled={locked}
+          label={`Include ${position.name}`}
+          onClick={() => onToggle([position.positionId], held)}
+        />
+        <span
+          style={{
+            fontWeight: 600,
+            color: held ? "var(--token-color-foreground-faint)" : "var(--token-color-foreground-primary)",
+            textDecoration: held ? "line-through" : "none",
+          }}
+        >
+          {position.name}
+        </span>
+        <span style={{ color: held ? "var(--token-color-foreground-faint)" : "var(--token-color-foreground-success)", fontWeight: 700 }}>
+          +{position.adds.length}
+        </span>
+        {held ? <span style={{ color: "var(--token-color-foreground-warning-on-surface)" }}>held back</span> : null}
+      </div>
+      {position.adds.map((o) => (
+        <DiffRow key={`${o.applicantId}|${o.positionId}`} o={o} idx={idx} held={held} onOpenMatch={onOpenMatch} />
+      ))}
+    </>
   );
 }
 
 function DiffRow({
   o,
   idx,
+  held,
   onOpenMatch,
 }: {
   o: AssignmentView;
   idx: Indexes;
+  held: boolean;
   onOpenMatch: (aid: number, pid: number) => void;
 }) {
   const preallocated = o.kind === "preallocated";
-  const st = statusStyle(preallocated ? "preallocated" : "allocated");
+  const st = statusStyle(held ? "neutral" : preallocated ? "preallocated" : "allocated");
   const applicant = idx.appById.get(o.applicantId);
   const pos = idx.posById.get(o.positionId);
   return (
@@ -219,9 +379,10 @@ function DiffRow({
         fontSize: 12.5,
         background: st.bg,
         borderLeft: `3px solid ${st.dot}`,
+        opacity: held ? 0.55 : 1,
       }}
     >
-      <span style={{ color: st.fg, fontWeight: 700 }}>+</span>
+      <span style={{ color: st.fg, fontWeight: 700 }}>{held ? "\u2013" : "+"}</span>
       <span
         style={{
           flex: 1,
@@ -405,6 +566,8 @@ function FinalizeStepper({
 
   const prefRows = snapshot.applicants.reduce((s, a) => s + a.prefs.length, 0);
   const totalRows = prefRows + snapshot.positions.reduce((s, p) => s + p.chairRank.length, 0);
+  const heldRows = heldBackRows(snapshot, new Set(commitState.excluded));
+  const purgeRows = totalRows - heldRows;
   const canPurge = purgeText.trim().toUpperCase() === "PURGE";
 
   const confirmPreview = () => onCommitState((prev) => ({ ...prev, previewed: true }));
@@ -425,7 +588,7 @@ function FinalizeStepper({
   const doExport = async () => {
     setBusyExport(true);
     try {
-      const receipt = await api.commit();
+      const receipt = await api.commit(commitState.excluded);
       onCommitState((prev) => ({
         ...prev,
         exported: true,
@@ -458,7 +621,7 @@ function FinalizeStepper({
   const doPurge = async () => {
     setBusyPurge(true);
     try {
-      const receipt = await api.purge();
+      const receipt = await api.purge(commitState.excluded);
       onApplySnapshot(receipt.snapshot);
       onCommitState((prev) => ({ ...prev, purged: true }));
       toast("success", `Purged ${receipt.deleted} rows.`);
@@ -592,7 +755,7 @@ function FinalizeStepper({
             }}
           >
             <Icon name="check-circle" size={16} color="var(--token-color-foreground-critical-on-surface)" />
-            {totalRows} preference rows permanently deleted. This cannot be undone.
+            {purgeRows} preference rows permanently deleted. This cannot be undone.
           </div>
         ) : (
           <>
@@ -610,10 +773,16 @@ function FinalizeStepper({
               <Icon name="alert-triangle" size={18} color="var(--token-color-foreground-critical-on-surface)" />
               <div style={{ fontSize: 12.5, color: "var(--token-color-foreground-critical-on-surface)", lineHeight: 1.5 }}>
                 <strong>
-                  Permanently deletes all {totalRows} preference & ranking rows from the database, plus every local
-                  preallocation.{" "}
+                  Permanently deletes {purgeRows} of {totalRows} preference & ranking rows from the database, plus the
+                  local preallocations that go with them.{" "}
                 </strong>
                 Cannot be undone. Make sure your archive downloaded and the merge request is on its way.
+                {heldRows > 0 ? (
+                  <>
+                    {" "}
+                    The {heldRows} rows on held-back positions stay in place, along with their preallocations.
+                  </>
+                ) : null}
               </div>
             </div>
             <div style={{ maxWidth: 280, marginBottom: 14 }}>
