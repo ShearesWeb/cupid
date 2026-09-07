@@ -24,6 +24,7 @@ fn main() {
             commands::connect,
             commands::connection_info,
             commands::sync,
+            commands::directory_snapshot,
             commands::add_preallocation,
             commands::remove_preallocation,
             commands::run_matching,

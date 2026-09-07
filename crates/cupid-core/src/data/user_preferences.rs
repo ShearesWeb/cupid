@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use postgres::Client;
+use postgres::GenericClient;
 
 /// One row of `preferred_positions` joined to the applicant's identity.
 #[derive(Debug)]
@@ -13,7 +13,7 @@ pub struct UserPrefRecord {
 }
 
 /// Load the DB `preferred_positions` into `UserPrefRecord>`.
-pub fn load(client: &mut Client) -> Result<Vec<UserPrefRecord>, Box<dyn Error>> {
+pub fn load(client: &mut impl GenericClient) -> Result<Vec<UserPrefRecord>, Box<dyn Error>> {
     let rows = client.query(
         "SELECT up.user_id, up.position_id, up.rank, \
                 u.name AS user_name, u.email AS user_email \

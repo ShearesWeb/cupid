@@ -1,5 +1,5 @@
-//! The one immutable read model. `build` projects the corpus plus an optional
-//! match run into a serializable Snapshot; every UI query becomes a lookup.
+//! The immutable allocation read model. `build` projects the corpus plus an optional
+//! match run into a serializable AllocationSnapshot; every UI query becomes a lookup.
 use std::collections::{BTreeSet, HashMap};
 
 use serde::Serialize;
@@ -23,7 +23,7 @@ pub enum Status {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Snapshot {
+pub struct AllocationSnapshot {
     pub synced_at: String,
     /// Load-time anomalies (e.g. stale preallocation rows) surfaced to the operator.
     pub warnings: Vec<String>,
@@ -182,8 +182,8 @@ pub fn build(
     result: Option<&MatchResult>,
     synced_at: String,
     warnings: Vec<String>,
-) -> Snapshot {
-    Snapshot {
+) -> AllocationSnapshot {
+    AllocationSnapshot {
         synced_at,
         warnings,
         ccas: build_ccas(pool),

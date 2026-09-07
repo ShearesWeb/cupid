@@ -1,10 +1,12 @@
 use std::collections::{HashMap, HashSet};
+use std::error::Error;
 
 use super::appointments::AppointmentRecord;
 use super::chair_preferences::ChairPrefRecord;
 use super::positions::PositionRecord;
 use super::user_preferences::UserPrefRecord;
 use super::users::UserRecord;
+use crate::directory::Directory;
 use crate::models::{
     Applicant, ApplicantIdx, Appointments, Cca, CcaIdx, Pool, Position, PositionIdx, PositionType,
 };
@@ -19,6 +21,39 @@ pub struct Records<'a> {
     pub user_prefs: &'a [UserPrefRecord],
     pub chair_prefs: &'a [ChairPrefRecord],
     pub appointments: &'a [AppointmentRecord],
+}
+
+/// Project the full directory through the existing allocation derivation.
+/// Periods, points and team status intentionally do not enter allocation:
+/// every existing holding continues to be treated as full-year.
+pub fn from_directory(
+    directory: &Directory,
+    user_prefs: &[UserPrefRecord],
+    chair_prefs: &[ChairPrefRecord],
+) -> Result<Pool, Box<dyn Error>> {
+    let users: Vec<_> = directory.users().map(|u| UserRecord {
+        user_id: u.id, name: u.name.clone(), email: u.email.clone(),
+    }).collect();
+    let positions: Vec<_> = directory.positions()
+        .filter(|p| p.position_type.allocation_type().is_some())
+        .map(|p| Ok(PositionRecord {
+            position_id: p.id, position_name: p.name.clone(),
+            position_type: p.position_type.as_str().into(),
+            capacity: p.capacity.map(i32::try_from).transpose()?,
+            cca_id: p.cca_id,
+            cca_name: directory.cca(p.cca_id).expect("validated CCA reference").name.clone(),
+        })).collect::<Result<_, Box<dyn Error>>>()?;
+    let appointments: Vec<_> = directory.appointments().map(|a| {
+        let user = directory.user(a.user_id).expect("validated user reference");
+        let position = directory.position(a.position_id).expect("validated position reference");
+        AppointmentRecord {
+            user_id: a.user_id, user_name: user.name.clone(), user_email: user.email.clone(),
+            position_id: a.position_id, cca_id: position.cca_id,
+            position_type: position.position_type.as_str().into(),
+        }
+    }).collect();
+    Ok(derive(&Records { users: &users, positions: &positions,
+        user_prefs, chair_prefs, appointments: &appointments }))
 }
 
 /// Build the owned [`Pool`] from the roll, the position catalogue, the
@@ -188,6 +223,63 @@ pub fn derive(records: &Records<'_>) -> Pool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directory_projection_preserves_allocation_and_external_occupancy() {
+        use crate::directory::*;
+        use crate::models::Preallocations;
+
+        let users: Vec<_> = (1..=4).map(|id| UserRecord {
+            user_id: id, name: format!("U{id}"), email: format!("u{id}@x"),
+        }).collect();
+        let positions = vec![
+            posrec(10, "maincomm", Some(2), 1),
+            posrec(11, "blockcomm", Some(1), 2),
+            posrec(12, "subcomm", Some(1), 3),
+            posrec(13, "lead", Some(1), 4),
+            posrec(14, "vice", None, 4),
+            posrec(15, "team-manager", Some(1), 4),
+            posrec(16, "member", None, 2),
+            posrec(17, "resident", None, 1),
+            posrec(18, "maincomm", None, 3),
+        ];
+        let appointments = vec![
+            apptrec_typed(1, 10, 1, "maincomm"),
+            apptrec_typed(2, 16, 2, "member"),
+            apptrec_typed(2, 17, 1, "resident"),
+            apptrec_typed(3, 13, 4, "lead"),
+            apptrec_typed(4, 18, 3, "maincomm"),
+        ];
+        let prefs = vec![upref(1, 10, 1), upref(2, 11, 1), upref(2, 10, 2), upref(3, 12, 1), upref(4, 18, 1)];
+        let chairs = vec![cpref(10, 2, 1), cpref(11, 2, 1), cpref(12, 3, 1)];
+        let old = derive(&Records { users: &users, positions: &positions,
+            appointments: &appointments, user_prefs: &prefs, chair_prefs: &chairs });
+        let mut directory = Directory::new(
+            users.iter().map(|u| User { id: u.user_id, name: u.name.clone(), email: u.email.clone() }).collect(),
+            (1..=5).map(|id| Cca { id, name: format!("C{id}"), kind: CcaKind::Committee,
+                tier: CcaTier::None, cca_type: CcaType::None, description: None, image_url: None }).collect(),
+            positions.iter().map(|p| CcaPosition { id: p.position_id, cca_id: p.cca_id,
+                name: p.position_name.clone(), description: None, reporting_position_id: None,
+                position_type: p.position_type.parse().unwrap(), capacity: p.capacity.map(|v| v as usize) }).collect(),
+            appointments.iter().map(|a| CcaAppointment { user_id: a.user_id, position_id: a.position_id,
+                commitment_period: CommitmentPeriod::Semester1, points: 9, team_status: TeamStatus::None,
+                created_at: None }).collect(),
+        ).unwrap();
+        let projected = from_directory(&directory, &prefs, &chairs).unwrap();
+        assert_eq!(projected.positions().count(), 3);
+        assert_eq!(projected.position(PositionIdx(10)).unwrap().vacancies(), 1);
+        assert_eq!(projected.external_occupancy(), &[(ApplicantIdx(2), CcaIdx(2)), (ApplicantIdx(3), CcaIdx(4)), (ApplicantIdx(4), CcaIdx(3))]);
+        let preallocations = Preallocations::new();
+        let view = |pool: &Pool| {
+            let result = crate::algorithm::run(pool, &preallocations);
+            serde_json::to_value(crate::snapshot::build(pool, &preallocations, Some(&result), "same".into(), vec![])).unwrap()
+        };
+        assert_eq!(view(&projected), view(&old));
+        directory.remove_appointment(1, 10).unwrap();
+        let refreshed = from_directory(&directory, &prefs, &chairs).unwrap();
+        assert_eq!(refreshed.position(PositionIdx(10)).unwrap().vacancies(), 2);
+        assert_eq!(refreshed.applicant(ApplicantIdx(1)).unwrap().preferences(), &[PositionIdx(10)]);
+    }
 
     // ---- corpus derivation (`derive`) ----
 

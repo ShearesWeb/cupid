@@ -3,8 +3,9 @@ use std::path::Path;
 
 use cupid::data::conn::ConnSpec;
 use cupid::data::preallocations::{self, PreallocationRecord};
+use cupid::directory::DirectorySnapshot;
 use cupid::models::{ApplicantIdx, Pool, PositionIdx};
-use cupid::snapshot::Snapshot;
+use cupid::snapshot::AllocationSnapshot;
 use tauri::State;
 use tauri_plugin_dialog::DialogExt;
 use time::OffsetDateTime;
@@ -40,7 +41,7 @@ pub struct ExportReceipt {
 #[serde(rename_all = "camelCase")]
 pub struct PurgeReceipt {
     pub deleted: u64,
-    pub snapshot: Snapshot,
+    pub snapshot: AllocationSnapshot,
 }
 
 fn now_rfc3339() -> String {
@@ -55,10 +56,12 @@ async fn spec_of(state: &State<'_, AppState>) -> Result<ConnSpec, String> {
 /// Load a complete, fresh input set: the corpus from the database (read-only)
 /// and the preallocations from the local store. Blocking.
 fn load_inputs(spec: &ConnSpec, store: &Path) -> Result<Inputs, String> {
-    let pool = cupid::data::db::load(spec).map_err(|e| e.to_string())?;
+    let loaded = cupid::data::db::load_all(spec).map_err(|e| e.to_string())?;
+    let pool = loaded.pool;
     let records = preallocations::read_file(store).map_err(|e| e.to_string())?;
     let (preallocations, warnings) = preallocations::resolve(&records, &pool);
     Ok(Inputs {
+        directory: loaded.directory,
         pool,
         records,
         preallocations,
@@ -102,7 +105,7 @@ pub async fn connection_info(state: State<'_, AppState>) -> Result<Option<String
 /// Reload the corpus from Postgres and the preallocations from the local
 /// store. Invalidates any previous run: the returned snapshot has `run: None`.
 #[tauri::command]
-pub async fn sync(state: State<'_, AppState>) -> Result<Snapshot, String> {
+pub async fn sync(state: State<'_, AppState>) -> Result<AllocationSnapshot, String> {
     let mut guard = state.inputs.lock().await;
     let spec = spec_of(&state).await?;
     let store = state.store_path();
@@ -111,11 +114,20 @@ pub async fn sync(state: State<'_, AppState>) -> Result<Snapshot, String> {
     Ok(snapshot_of(guard.as_ref().expect("just set")))
 }
 
+/// Complete CCA directory from the same sync as the allocation inputs.
+/// Includes all positions and holders, plus CCAs that have no positions.
+#[tauri::command]
+pub async fn directory_snapshot(state: State<'_, AppState>) -> Result<DirectorySnapshot, String> {
+    let guard = state.inputs.lock().await;
+    let inputs = guard.as_ref().ok_or("Sync first: no directory loaded.")?;
+    Ok(inputs.directory.snapshot())
+}
+
 /// Run the allocation (preallocations, then IA over BlockComm, then GS over
 /// Main/Sub) against the loaded corpus. Stores the result and returns a
 /// snapshot carrying the RunView.
 #[tauri::command]
-pub async fn run_matching(state: State<'_, AppState>) -> Result<Snapshot, String> {
+pub async fn run_matching(state: State<'_, AppState>) -> Result<AllocationSnapshot, String> {
     let mut guard = state.inputs.lock().await;
     let inputs = guard.as_mut().ok_or("Sync first: no corpus loaded.")?;
     inputs.last_result = Some(block_in_place(|| {
@@ -134,7 +146,7 @@ pub async fn add_preallocation(
     applicant_id: i32,
     position_id: i32,
     note: Option<String>,
-) -> Result<Snapshot, String> {
+) -> Result<AllocationSnapshot, String> {
     let mut guard = state.inputs.lock().await;
     let inputs = guard.as_mut().ok_or("Sync first: no corpus loaded.")?;
     inputs.pool.applicant(ApplicantIdx(applicant_id)).ok_or("Unknown applicant.")?;
@@ -168,7 +180,7 @@ pub async fn remove_preallocation(
     state: State<'_, AppState>,
     applicant_id: i32,
     position_id: i32,
-) -> Result<Snapshot, String> {
+) -> Result<AllocationSnapshot, String> {
     let mut guard = state.inputs.lock().await;
     let inputs = guard.as_mut().ok_or("Sync first: no corpus loaded.")?;
 
