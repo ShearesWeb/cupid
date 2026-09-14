@@ -2,11 +2,13 @@ use std::path::PathBuf;
 
 use cupid::data::conn::ConnSpec;
 use cupid::data::preallocations::PreallocationRecord;
+use cupid::directory::Directory;
 use cupid::models::{MatchResult, Pool, Preallocations};
-use cupid::snapshot::{self, Snapshot};
+use cupid::snapshot::{self, AllocationSnapshot};
 use tokio::sync::Mutex;
 
 pub struct Inputs {
+    pub directory: Directory,
     pub pool: Pool,
     /// The local store's raw records, stale entries included: the store file
     /// is the source of truth and a save must never drop an entry merely
@@ -56,7 +58,7 @@ impl AppState {
 }
 
 /// Project the current inputs into the immutable read model served to the UI.
-pub fn snapshot_of(inputs: &Inputs) -> Snapshot {
+pub fn snapshot_of(inputs: &Inputs) -> AllocationSnapshot {
     snapshot::build(
         &inputs.pool,
         &inputs.preallocations,

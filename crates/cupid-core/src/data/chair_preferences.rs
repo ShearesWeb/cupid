@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use postgres::Client;
+use postgres::GenericClient;
 
 /// One row of `preferred_candidates`, joined to the candidate's identity. A
 /// chair may shortlist someone who never applied, so the ranking is the only
@@ -15,7 +15,7 @@ pub struct ChairPrefRecord {
 }
 
 /// Load the DB `preferred_candidates` into `ChairPrefRecord`s.
-pub fn load(client: &mut Client) -> Result<Vec<ChairPrefRecord>, Box<dyn Error>> {
+pub fn load(client: &mut impl GenericClient) -> Result<Vec<ChairPrefRecord>, Box<dyn Error>> {
     let rows = client.query(
         "SELECT pc.position_id, pc.user_id, pc.rank, \
                 u.name AS user_name, u.email AS user_email \

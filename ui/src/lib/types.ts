@@ -91,7 +91,7 @@ export interface RunView {
   unfilled: UnfilledView[];
 }
 
-export interface Snapshot {
+export interface AllocationSnapshot {
   syncedAt: string;
   warnings: string[];
   ccas: CcaView[];
@@ -105,6 +105,9 @@ export interface Snapshot {
   run: RunView | null;
 }
 
+/** @deprecated Use AllocationSnapshot. Kept temporarily for existing screens. */
+export type Snapshot = AllocationSnapshot;
+
 export interface ExportReceipt {
   rows: number;
   files: string[];
@@ -114,5 +117,5 @@ export interface ExportReceipt {
 
 export interface PurgeReceipt {
   deleted: number;
-  snapshot: Snapshot;
+  snapshot: AllocationSnapshot;
 }
