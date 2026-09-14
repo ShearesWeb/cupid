@@ -4,6 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use serde::Serialize;
 
+use crate::directory::Directory;
 use crate::models::{
     Algorithm, Allocation, ApplicantIdx, CapacityStore, Event, EventKind, MatchResult, Pool,
     PositionIdx, PositionType, Preallocations, RejectReason,
@@ -43,6 +44,7 @@ pub struct AllocationSnapshot {
 pub struct CcaView {
     pub id: i32,
     pub name: String,
+    pub kind: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -183,10 +185,50 @@ pub fn build(
     synced_at: String,
     warnings: Vec<String>,
 ) -> AllocationSnapshot {
+    build_internal(
+        pool,
+        build_ccas(pool),
+        preallocations,
+        result,
+        synced_at,
+        warnings,
+    )
+}
+
+/// Build an allocation snapshot while retaining every CCA from the loaded
+/// directory, including CCAs whose positions are not allocatable by Cupid.
+pub fn build_with_directory(
+    directory: &Directory,
+    pool: &Pool,
+    preallocations: &Preallocations,
+    result: Option<&MatchResult>,
+    synced_at: String,
+    warnings: Vec<String>,
+) -> AllocationSnapshot {
+    let mut ccas: Vec<CcaView> = directory
+        .ccas()
+        .map(|c| CcaView {
+            id: c.id,
+            name: c.name.clone(),
+            kind: c.kind.as_str().to_string(),
+        })
+        .collect();
+    ccas.sort_by_key(|v| v.id);
+    build_internal(pool, ccas, preallocations, result, synced_at, warnings)
+}
+
+fn build_internal(
+    pool: &Pool,
+    ccas: Vec<CcaView>,
+    preallocations: &Preallocations,
+    result: Option<&MatchResult>,
+    synced_at: String,
+    warnings: Vec<String>,
+) -> AllocationSnapshot {
     AllocationSnapshot {
         synced_at,
         warnings,
-        ccas: build_ccas(pool),
+        ccas,
         positions: build_positions(pool),
         applicants: build_applicants(pool),
         committed: build_pairs(pool.appointments().iter().map(|a| (a.applicant, a.position))),
@@ -204,6 +246,7 @@ fn build_ccas(pool: &Pool) -> Vec<CcaView> {
         .map(|c| CcaView {
             id: c.id.0,
             name: c.name.clone(),
+            kind: "unknown".to_string(),
         })
         .collect();
     views.sort_by_key(|v| v.id);

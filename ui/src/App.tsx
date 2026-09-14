@@ -3,7 +3,7 @@
 // and replaces the mock splash loader with a real "sync to load" empty state.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import * as api from "./lib/api.ts";
-import type { PositionType, Snapshot } from "./lib/types.ts";
+import type { DirectorySnapshot, PositionType, Snapshot } from "./lib/types.ts";
 import { buildIndexes, type Indexes } from "./lib/indexes.ts";
 import { errorMessage, fmtTime } from "./lib/format.ts";
 import { Icon, Card, Button } from "./components/index.ts";
@@ -22,9 +22,10 @@ import { DetailPage as DetailPageScreen } from "./screens/DetailPage.tsx";
 import { EventSidebar as EventSidebarScreen } from "./screens/EventSidebar.tsx";
 import { Preallocations as PreallocationsScreen } from "./screens/Preallocations.tsx";
 import { Review as ReviewScreen, type CommitState } from "./screens/Review.tsx";
+import { Ccas as CcasScreen } from "./screens/Ccas.tsx";
 import { TextInput } from "./components/TextInput.tsx";
 
-type Screen = "alloc" | "prealloc" | "review";
+type Screen = "alloc" | "ccas" | "prealloc" | "review";
 type View = "position" | "applicant";
 type TypeFilter = "all" | PositionType;
 type Detail = { type: "applicant" | "position"; id: number } | null;
@@ -46,6 +47,7 @@ const initialCommitState: CommitState = {
 
 export interface UiState {
   snapshot: Snapshot | null;
+  directory: DirectorySnapshot | null;
   idx: Indexes | null;
   screen: Screen;
   view: View;
@@ -83,6 +85,7 @@ let toastSeq = 0;
 
 function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [directory, setDirectory] = useState<DirectorySnapshot | null>(null);
   const [theme, setTheme] = useState<Theme>("light");
   const [screen, setScreenState] = useState<Screen>("alloc");
   const [view, setViewState] = useState<View>("position");
@@ -154,7 +157,9 @@ function App() {
     setSyncing(true);
     try {
       const snap = await api.sync();
+      const directorySnapshot = await api.directorySnapshot();
       setSnapshot(snap);
+      setDirectory(directorySnapshot);
       setCommitState(initialCommitState);
       setPurgeText("");
       setDetail(null);
@@ -227,6 +232,7 @@ function App() {
       setConnInfo(label);
       setChangingConn(false);
       setSnapshot(null);
+      setDirectory(null);
       setCommitState(initialCommitState);
       setPurgeText("");
       setDetail(null);
@@ -309,6 +315,7 @@ function App() {
 
   const ui: UiState = {
     snapshot,
+    directory,
     idx,
     screen,
     view,
@@ -409,6 +416,8 @@ function App() {
             <DetailPage ui={ui} handlers={handlers} onBack={() => setDetail(null)} />
           ) : screen === "alloc" ? (
             <Allocations ui={ui} handlers={handlers} />
+          ) : screen === "ccas" ? (
+            <Ccas ui={ui} />
           ) : screen === "prealloc" ? (
             <PreallocationsWrapper ui={ui} handlers={handlers} />
           ) : (
@@ -837,6 +846,7 @@ function Sidebar({
 }) {
   const items: { id: Screen; label: string; icon: string }[] = [
     { id: "alloc", label: "Allocations", icon: "layers" },
+    { id: "ccas", label: "CCAs", icon: "folder" },
     { id: "prealloc", label: "Preallocations", icon: "tag" },
     { id: "review", label: "Review & commit", icon: "lock" },
   ];
@@ -1034,6 +1044,11 @@ function Allocations({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
       onRun={handlers.doRun}
     />
   );
+}
+
+function Ccas({ ui }: { ui: UiState }) {
+  if (!ui.directory) return null;
+  return <CcasScreen directory={ui.directory} />;
 }
 
 function Review({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {

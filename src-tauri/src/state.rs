@@ -59,7 +59,8 @@ impl AppState {
 
 /// Project the current inputs into the immutable read model served to the UI.
 pub fn snapshot_of(inputs: &Inputs) -> AllocationSnapshot {
-    snapshot::build(
+    snapshot::build_with_directory(
+        &inputs.directory,
         &inputs.pool,
         &inputs.preallocations,
         inputs.last_result.as_ref(),

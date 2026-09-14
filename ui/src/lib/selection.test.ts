@@ -6,8 +6,8 @@ const snap: Snapshot = {
   syncedAt: "2026-07-07T00:00:00Z",
   warnings: [],
   ccas: [
-    { id: 1, name: "Chess" },
-    { id: 2, name: "Media" },
+    { id: 1, name: "Chess", kind: "committee" },
+    { id: 2, name: "Media", kind: "culture" },
   ],
   positions: [
     { id: 10, ccaId: 1, name: "Head", type: "main", capacity: 1, chairRank: [1, 2] },

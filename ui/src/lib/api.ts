@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ExportReceipt, PurgeReceipt, AllocationSnapshot } from "./types";
+import type { ExportReceipt, PurgeReceipt, AllocationSnapshot, DirectorySnapshot } from "./types";
 
 /// Verify Supabase credentials and store them as the active connection.
 /// Resolves to a display label for the target (never contains the password).
@@ -13,6 +13,8 @@ export const connect = (
 export const connectionInfo = (): Promise<string | null> => invoke("connection_info");
 
 export const sync = (): Promise<AllocationSnapshot> => invoke("sync");
+
+export const directorySnapshot = (): Promise<DirectorySnapshot> => invoke("directory_snapshot");
 
 export const runMatching = (): Promise<AllocationSnapshot> => invoke("run_matching");
 

@@ -2,9 +2,66 @@
 export type Status = "existing" | "allocated" | "preallocated" | "displaced" | "quota" | "noreturn" | "neutral";
 export type PositionType = "block" | "main" | "sub";
 
+export type DirectoryPositionType =
+  | "lead"
+  | "vice"
+  | "blockcomm"
+  | "maincomm"
+  | "subcomm"
+  | "team-manager"
+  | "member"
+  | "resident";
+
+export type CcaKind = "sports" | "committee" | "culture" | "jcrc" | "adhoc" | "supplementary";
+
+export type CommitmentPeriod = "semester-1" | "semester-2" | "full-year" | "ex-shearite";
+
+export interface DirectoryUser {
+  id: number;
+  name: string;
+  email: string;
+}
+
+export interface DirectoryCca {
+  id: number;
+  name: string;
+  kind: CcaKind;
+  tier: "none" | "tier-1" | "tier-2";
+  type: "none" | "type-a" | "type-b";
+  description: string | null;
+  imageUrl: string | null;
+}
+
+export interface DirectoryPosition {
+  id: number;
+  ccaId: number;
+  reportingPositionId: number | null;
+  positionType: DirectoryPositionType;
+  name: string;
+  description: string | null;
+  capacity: number | null;
+}
+
+export interface DirectoryAppointment {
+  userId: number;
+  positionId: number;
+  commitmentPeriod: CommitmentPeriod;
+  points: number;
+  teamStatus: "none" | "shortlisted" | "reserve" | "main-team" | "varsity";
+  createdAt: string | null;
+}
+
+export interface DirectorySnapshot {
+  users: DirectoryUser[];
+  ccas: DirectoryCca[];
+  positions: DirectoryPosition[];
+  appointments: DirectoryAppointment[];
+}
+
 export interface CcaView {
   id: number;
   name: string;
+  kind: string;
 }
 
 export interface PositionView {
