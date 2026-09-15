@@ -308,6 +308,26 @@ impl Directory {
     }
 
     pub fn snapshot(&self) -> DirectorySnapshot {
+        self.snapshot_with_changes(&CcaAppointmentChangeSet::default())
+    }
+
+    pub fn snapshot_with_changes(&self, changes: &CcaAppointmentChangeSet) -> DirectorySnapshot {
+        let changed: std::collections::HashMap<(i32, i32), CcaAppointmentStatus> = changes
+            .changes
+            .iter()
+            .filter_map(|change| match change {
+                CcaAppointmentChange::Add { appointment } => Some((
+                    (appointment.user_id, appointment.position_id),
+                    CcaAppointmentStatus::Added,
+                )),
+                CcaAppointmentChange::ChangePeriod {
+                    user_id,
+                    position_id,
+                    ..
+                } => Some(((*user_id, *position_id), CcaAppointmentStatus::Modified)),
+                CcaAppointmentChange::Remove { .. } => None,
+            })
+            .collect();
         DirectorySnapshot {
             users: self.users.values().cloned().collect(),
             ccas: self.ccas.values().cloned().collect(),
@@ -318,7 +338,22 @@ impl Directory {
                     position: p.clone(),
                 })
                 .collect(),
-            appointments: self.appointments.values().cloned().collect(),
+            appointments: self
+                .appointments
+                .values()
+                .cloned()
+                .map(|appointment| {
+                    let status = changed
+                        .get(&(appointment.user_id, appointment.position_id))
+                        .copied()
+                        .unwrap_or(CcaAppointmentStatus::Existing);
+                    CcaAppointmentView {
+                        appointment,
+                        status,
+                    }
+                })
+                .collect(),
+            changes: changes.changes.clone(),
         }
     }
 }

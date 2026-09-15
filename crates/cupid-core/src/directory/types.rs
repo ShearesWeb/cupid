@@ -67,6 +67,7 @@ impl PositionKind {
                 | Self::MainComm
                 | Self::SubComm
                 | Self::TeamManager
+                | Self::Member
         )
     }
 }
@@ -135,6 +136,47 @@ pub struct CcaAppointment {
     pub created_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CcaAppointmentStatus {
+    Existing,
+    Added,
+    Modified,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CcaAppointmentView {
+    #[serde(flatten)]
+    pub appointment: CcaAppointment,
+    pub status: CcaAppointmentStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CcaAppointmentChange {
+    Add {
+        appointment: CcaAppointment,
+    },
+    Remove {
+        user_id: i32,
+        position_id: i32,
+    },
+    ChangePeriod {
+        user_id: i32,
+        position_id: i32,
+        from: CommitmentPeriod,
+        to: CommitmentPeriod,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CcaAppointmentChangeSet {
+    pub base_sync: String,
+    pub changes: Vec<CcaAppointmentChange>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectoryPositionView {
@@ -149,5 +191,6 @@ pub struct DirectorySnapshot {
     pub users: Vec<User>,
     pub ccas: Vec<Cca>,
     pub positions: Vec<DirectoryPositionView>,
-    pub appointments: Vec<CcaAppointment>,
+    pub appointments: Vec<CcaAppointmentView>,
+    pub changes: Vec<CcaAppointmentChange>,
 }

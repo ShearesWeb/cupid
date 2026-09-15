@@ -112,7 +112,9 @@ pub fn validate(preallocations: &Preallocations, pool: &Pool) -> Vec<String> {
     }
     for appointment in pool.appointments().iter() {
         if let Some(position) = pool.position(appointment.position) {
-            *cca_counts.entry((appointment.applicant, position.cca.id)).or_insert(0) += 1;
+            *cca_counts
+                .entry((appointment.applicant, position.cca.id))
+                .or_insert(0) += 1;
         }
     }
     for &(a, cca) in pool.external_occupancy() {
@@ -176,10 +178,7 @@ mod tests {
 
     #[test]
     fn warns_when_preallocations_overfill_a_position() {
-        let pool = Pool::new(
-            vec![applicant(1), applicant(2)],
-            vec![position(10, 1, 1)],
-        );
+        let pool = Pool::new(vec![applicant(1), applicant(2)], vec![position(10, 1, 1)]);
         let mut preallocations = Preallocations::new();
         preallocations.grant(ApplicantIdx(1), PositionIdx(10));
         preallocations.grant(ApplicantIdx(2), PositionIdx(10));
@@ -197,11 +196,14 @@ mod tests {
     fn already_appointed_pairs_do_not_count_toward_overfill() {
         // The pair (1, 10) is already committed: the preallocation row is
         // redundant, not an extra seat.
-        let pool = Pool::new(vec![applicant(1)], vec![position(10, 1, 1).with_appointed(1)])
-            .with_appointments(Appointments::from_iter([Appointment {
-                applicant: ApplicantIdx(1),
-                position: PositionIdx(10),
-            }]));
+        let pool = Pool::new(
+            vec![applicant(1)],
+            vec![position(10, 1, 1).with_appointed(1)],
+        )
+        .with_appointments(Appointments::from_iter([Appointment {
+            applicant: ApplicantIdx(1),
+            position: PositionIdx(10),
+        }]));
         let mut preallocations = Preallocations::new();
         preallocations.grant(ApplicantIdx(1), PositionIdx(10));
 
@@ -254,12 +256,18 @@ mod tests {
     }
 
     fn record(user: i32, position: i32, note: Option<&str>) -> PreallocationRecord {
-        PreallocationRecord { user_id: user, position_id: position, note: note.map(String::from) }
+        PreallocationRecord {
+            user_id: user,
+            position_id: position,
+            note: note.map(String::from),
+        }
     }
 
     fn temp_store(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir()
-            .join(format!("cupid-prealloc-test-{}-{name}.json", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "cupid-prealloc-test-{}-{name}.json",
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -280,8 +288,8 @@ mod tests {
 
     #[test]
     fn write_creates_missing_parent_directories() {
-        let dir = std::env::temp_dir()
-            .join(format!("cupid-prealloc-test-{}-nested", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("cupid-prealloc-test-{}-nested", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("deep").join("store.json");
         write_file(&path, &[record(1, 10, None)]).unwrap();
@@ -303,7 +311,10 @@ mod tests {
             preallocations.iter().collect::<Vec<_>>(),
             vec![(ApplicantIdx(1), PositionIdx(10))]
         );
-        assert_eq!(preallocations.note(ApplicantIdx(1), PositionIdx(10)), Some("keep"));
+        assert_eq!(
+            preallocations.note(ApplicantIdx(1), PositionIdx(10)),
+            Some("keep")
+        );
         assert_eq!(warnings.len(), 2, "{warnings:?}");
         assert!(warnings[0].contains("applicant 99"), "{}", warnings[0]);
         assert!(warnings[1].contains("position 99"), "{}", warnings[1]);

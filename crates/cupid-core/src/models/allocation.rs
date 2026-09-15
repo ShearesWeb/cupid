@@ -244,8 +244,16 @@ mod tests {
     #[test]
     fn events_iterates_every_event() {
         let mut ledger = Ledger::new(Algorithm::GaleShapley);
-        ledger.reject(ApplicantIdx(2), PositionIdx(10), RejectReason::RoleCapacityFull);
-        ledger.reject(ApplicantIdx(3), PositionIdx(10), RejectReason::NotRankedByChair);
+        ledger.reject(
+            ApplicantIdx(2),
+            PositionIdx(10),
+            RejectReason::RoleCapacityFull,
+        );
+        ledger.reject(
+            ApplicantIdx(3),
+            PositionIdx(10),
+            RejectReason::NotRankedByChair,
+        );
         let result = ledger.finish();
         assert_eq!(result.events().count(), 2);
     }

@@ -45,7 +45,11 @@ fn seat_preallocations(
     let mut pairs: Vec<_> = preallocations.iter().collect();
     pairs.sort();
     for (applicant_id, position_id) in pairs {
-        if pool.appointments().held_by(applicant_id).contains(&position_id) {
+        if pool
+            .appointments()
+            .held_by(applicant_id)
+            .contains(&position_id)
+        {
             continue;
         }
         let (Some(applicant), Some(position)) =
@@ -169,8 +173,24 @@ mod tests {
             vec![PositionIdx(60)],
         )];
         let positions = vec![
-            Position::new(40, Cca::new(1, "C1"), "M1".into(), None, 1, MainComm, vec![]),
-            Position::new(41, Cca::new(2, "C2"), "M2".into(), None, 1, MainComm, vec![]),
+            Position::new(
+                40,
+                Cca::new(1, "C1"),
+                "M1".into(),
+                None,
+                1,
+                MainComm,
+                vec![],
+            ),
+            Position::new(
+                41,
+                Cca::new(2, "C2"),
+                "M2".into(),
+                None,
+                1,
+                MainComm,
+                vec![],
+            ),
             Position::new(
                 60,
                 Cca::new(3, "C3"),
@@ -494,7 +514,15 @@ mod tests {
                     SubComm,
                     ranking.clone(),
                 ),
-                Position::new(12, Cca::new(3, "C3"), "B".into(), None, 2, BlockComm, ranking),
+                Position::new(
+                    12,
+                    Cca::new(3, "C3"),
+                    "B".into(),
+                    None,
+                    2,
+                    BlockComm,
+                    ranking,
+                ),
             ];
             Pool::new(applicants, positions)
         };
@@ -630,7 +658,15 @@ mod tests {
                 BlockComm,
                 vec![ApplicantIdx(2), ApplicantIdx(1)],
             ),
-            Position::new(61, Cca::new(2, "C2"), "X".into(), None, 1, BlockComm, vec![]), // ranks nobody
+            Position::new(
+                61,
+                Cca::new(2, "C2"),
+                "X".into(),
+                None,
+                1,
+                BlockComm,
+                vec![],
+            ), // ranks nobody
         ];
 
         let result = run(&Pool::new(applicants, positions), &Preallocations::new());

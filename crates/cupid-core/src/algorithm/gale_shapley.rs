@@ -152,7 +152,9 @@ fn propose(
         store.revoke(loser, position.position_type, position.cca.id);
         store.grant(applicant.id, position.position_type, position.cca.id);
         ledger.bump(applicant, loser, position);
-        return Proposal::Seated { displaced: Some(loser) };
+        return Proposal::Seated {
+            displaced: Some(loser),
+        };
     }
 
     ledger.reject(applicant.id, position.id, RejectReason::RoleCapacityFull);

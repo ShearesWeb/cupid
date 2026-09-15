@@ -85,8 +85,8 @@ appointment ID. `capacity: None` means unlimited and `Some(0)` means closed.
 
 `PositionKind::allocation_type()` maps only block/main/sub positions into the
 old allocation `PositionType`. `PositionKind::can_manage_appointments()` is a
-backend policy: lead, vice, blockcomm, maincomm, subcomm and team-manager are
-editable; member and resident are read-only.
+backend policy: lead, vice, blockcomm, maincomm, subcomm, team-manager and
+member are editable; resident is read-only.
 
 `Directory` validates unknown users/positions, duplicate pairs, protected
 roles, per-semester position capacity and overlapping non-resident CCA
@@ -174,7 +174,7 @@ and detail screens showing:
 - reporting relationships;
 - capacity (`unlimited` for null, `closed` for zero);
 - current holders and commitment periods;
-- member/resident rows without edit controls.
+- member and resident rows, with resident rows without edit controls.
 
 Use `AllocationSnapshot` for existing allocation screens. Do not reuse its
 `block | main | sub` type union for directory positions.
@@ -215,7 +215,7 @@ re-resolve preallocations and clear the old allocation result. No separate
 
 - All CCAs and all eight position types are visible.
 - Added, modified and removed appointment rows have display status.
-- Member/resident edits fail in Rust and are hidden from edit controls.
+- Resident edits fail in Rust and are hidden from edit controls; member edits are available from the CCA explorer.
 - Capacity and semester CCA-conflict rules are enforced.
 - Pending changes are separate from effective `Directory` and allocation `Pool`.
 - Appointment publication handles add, remove and period update.

@@ -49,13 +49,20 @@ export interface DirectoryAppointment {
   points: number;
   teamStatus: "none" | "shortlisted" | "reserve" | "main-team" | "varsity";
   createdAt: string | null;
+  status: "existing" | "added" | "modified";
 }
+
+export type DirectoryAppointmentChange =
+  | { kind: "add"; appointment: DirectoryAppointment }
+  | { kind: "remove"; userId: number; positionId: number }
+  | { kind: "changePeriod"; userId: number; positionId: number; from: CommitmentPeriod; to: CommitmentPeriod };
 
 export interface DirectorySnapshot {
   users: DirectoryUser[];
   ccas: DirectoryCca[];
   positions: DirectoryPosition[];
   appointments: DirectoryAppointment[];
+  changes: DirectoryAppointmentChange[];
 }
 
 export interface CcaView {

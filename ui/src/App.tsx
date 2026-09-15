@@ -78,6 +78,9 @@ export interface UiHandlers {
   setPurgeText: (v: string) => void;
   addPreallocation: (applicantId: number, positionId: number, note: string | null) => Promise<boolean>;
   removePreallocation: (applicantId: number, positionId: number) => Promise<boolean>;
+  addAppointment: (userId: number, positionId: number, period: string) => Promise<boolean>;
+  removeAppointment: (userId: number, positionId: number) => Promise<boolean>;
+  updateAppointmentPeriod: (userId: number, positionId: number, period: string) => Promise<boolean>;
   applySnapshot: (snap: Snapshot) => void;
 }
 
@@ -217,6 +220,39 @@ function App() {
     }
   };
 
+  const addAppointment = async (userId: number, positionId: number, period: string) => {
+    try {
+      setDirectory(await api.addAppointment(userId, positionId, period));
+      toast("success", "Appointment added to the pending changes.");
+      return true;
+    } catch (e) {
+      toast("error", errorMessage(e));
+      return false;
+    }
+  };
+
+  const removeAppointment = async (userId: number, positionId: number) => {
+    try {
+      setDirectory(await api.removeAppointment(userId, positionId));
+      toast("success", "Appointment removed from the pending changes.");
+      return true;
+    } catch (e) {
+      toast("error", errorMessage(e));
+      return false;
+    }
+  };
+
+  const updateAppointmentPeriod = async (userId: number, positionId: number, period: string) => {
+    try {
+      setDirectory(await api.updateAppointmentPeriod(userId, positionId, period));
+      toast("success", "Commitment period updated in the pending changes.");
+      return true;
+    } catch (e) {
+      toast("error", errorMessage(e));
+      return false;
+    }
+  };
+
   // Verify credentials, adopt the new target, and pull its corpus. The old
   // snapshot dies with the old database; a connect failure leaves everything
   // untouched and surfaces inline on the form (toasts vanish too fast for
@@ -346,6 +382,9 @@ function App() {
     setPurgeText,
     addPreallocation,
     removePreallocation,
+    addAppointment,
+    removeAppointment,
+    updateAppointmentPeriod,
     applySnapshot,
   };
 
@@ -417,7 +456,7 @@ function App() {
           ) : screen === "alloc" ? (
             <Allocations ui={ui} handlers={handlers} />
           ) : screen === "ccas" ? (
-            <Ccas ui={ui} />
+            <Ccas ui={ui} handlers={handlers} />
           ) : screen === "prealloc" ? (
             <PreallocationsWrapper ui={ui} handlers={handlers} />
           ) : (
@@ -1046,9 +1085,9 @@ function Allocations({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
   );
 }
 
-function Ccas({ ui }: { ui: UiState }) {
+function Ccas({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
   if (!ui.directory) return null;
-  return <CcasScreen directory={ui.directory} />;
+  return <CcasScreen directory={ui.directory} onAdd={handlers.addAppointment} onRemove={handlers.removeAppointment} onUpdatePeriod={handlers.updateAppointmentPeriod} />;
 }
 
 function Review({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
@@ -1056,6 +1095,7 @@ function Review({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
   return (
     <ReviewScreen
       snapshot={ui.snapshot}
+      directory={ui.directory ?? { users: [], ccas: [], positions: [], appointments: [], changes: [] }}
       idx={ui.idx}
       commitState={ui.commitState}
       purgeText={ui.purgeText}

@@ -71,7 +71,11 @@ fn snapshot_preserves_all_roles_empty_ccas_and_appointment_metadata() {
         [1, 2]
     );
     assert_eq!(snapshot.positions.len(), 8);
-    assert_eq!(snapshot.appointments, [appointment]);
+    assert_eq!(snapshot.appointments[0].appointment, appointment);
+    assert_eq!(
+        snapshot.appointments[0].status,
+        cupid::directory::CcaAppointmentStatus::Existing
+    );
     let json = serde_json::to_value(snapshot).unwrap();
     assert_eq!(json["positions"][5]["positionType"], "team-manager");
     assert!(json["positions"][5].get("canManageAppointments").is_none());
@@ -83,21 +87,17 @@ fn snapshot_preserves_all_roles_empty_ccas_and_appointment_metadata() {
 }
 
 #[test]
-fn edits_protect_member_and_resident_even_when_removing_a_missing_pair() {
+fn edits_protect_resident_even_when_removing_a_missing_pair() {
     let mut directory = fixture(vec![holding(1, 16, CommitmentPeriod::FullYear)]);
-    for id in [16, 17] {
-        assert!(matches!(
-            directory.add_appointment(2, id, CommitmentPeriod::FullYear),
-            Err(DirectoryError::ReadOnlyPosition(_))
-        ));
-        assert!(matches!(
-            directory.remove_appointment(1, id),
-            Err(DirectoryError::ReadOnlyPosition(_))
-        ));
-        assert!(matches!(
-            directory.update_appointment_period(1, id, CommitmentPeriod::Semester2),
-            Err(DirectoryError::ReadOnlyPosition(_))
-        ));
+    directory.add_appointment(2, 16, CommitmentPeriod::FullYear).unwrap();
+    directory.remove_appointment(1, 16).unwrap();
+    directory.update_appointment_period(2, 16, CommitmentPeriod::Semester2).unwrap();
+    for operation in [
+        directory.add_appointment(2, 17, CommitmentPeriod::FullYear),
+        directory.remove_appointment(1, 17).map(|_| ()),
+        directory.update_appointment_period(1, 17, CommitmentPeriod::Semester2),
+    ] {
+        assert!(matches!(operation, Err(DirectoryError::ReadOnlyPosition(_))));
     }
     assert_eq!(directory.appointments().count(), 1);
 }

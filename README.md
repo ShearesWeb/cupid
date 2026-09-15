@@ -13,10 +13,10 @@ curl -fsSL https://raw.githubusercontent.com/ShearesWeb/cupid/main/install.sh | 
 
 The script resolves the latest release and installs the build for your machine:
 
-| Platform | Asset | Lands in |
-|---|---|---|
-| macOS (Apple Silicon) | `Cupid_aarch64.app.tar.gz` | `/Applications/Cupid.app`, or `~/Applications` if the former is not writable |
-| Linux (x86_64) | `Cupid_<version>_amd64.AppImage` | `~/.local/lib/cupid/`, with a `cupid` symlink in `~/.local/bin` and a desktop entry |
+| Platform              | Asset                            | Lands in                                                                            |
+| --------------------- | -------------------------------- | ----------------------------------------------------------------------------------- |
+| macOS (Apple Silicon) | `Cupid_aarch64.app.tar.gz`       | `/Applications/Cupid.app`, or `~/Applications` if the former is not writable        |
+| Linux (x86_64)        | `Cupid_<version>_amd64.AppImage` | `~/.local/lib/cupid/`, with a `cupid` symlink in `~/.local/bin` and a desktop entry |
 
 Intel Macs and arm64 Linux have no published build; those have to build from source.
 On Windows, run the `.exe` installer from the [releases page](https://github.com/ShearesWeb/cupid/releases/latest).
@@ -35,11 +35,11 @@ A Rust engine wrapped in a Tauri desktop shell, with a React console on top.
 All domain logic stays in Rust. The allocation UI renders the engine snapshot;
 a separate directory snapshot supplies all CCAs, positions and appointment holders.
 
-| Crate / dir | Role | Stack |
-|---|---|---|
+| Crate / dir         | Role                                                                                                                                                                                                 | Stack                            |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
 | `crates/cupid-core` | The engine: domain model, the preallocation, immediate-acceptance and Gale-Shapley passes, and the `snapshot` read model that serves every UI query as a lookup. Also builds the `cupid` CLI binary. | Rust 2024, `postgres` + `rustls` |
-| `src-tauri` | Desktop shell and command surface: `connect`, `sync`, `run_matching`, preallocation add/remove, `commit`, `archive`, `purge`. | Tauri 2, `tokio` |
-| `ui` | The console. Builds lookup maps from the snapshot and renders; no domain logic. | React 19, TypeScript, Vite 8 |
+| `src-tauri`         | Desktop shell and command surface: `connect`, `sync`, `run_matching`, preallocation add/remove, `commit`, `archive`, `purge`.                                                                        | Tauri 2, `tokio`                 |
+| `ui`                | The console. Builds lookup maps from the snapshot and renders; no domain logic.                                                                                                                      | React 19, TypeScript, Vite 8     |
 
 Data loads read-only from a Supabase Postgres instance, configured in-app.
 Committing a run exports per-CCA CSVs as a merge request against the intranet repo rather than writing appointments back.

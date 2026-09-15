@@ -16,6 +16,15 @@ export const sync = (): Promise<AllocationSnapshot> => invoke("sync");
 
 export const directorySnapshot = (): Promise<DirectorySnapshot> => invoke("directory_snapshot");
 
+export const addAppointment = (userId: number, positionId: number, period: string): Promise<DirectorySnapshot> =>
+  invoke("add_appointment", { userId, positionId, period });
+
+export const removeAppointment = (userId: number, positionId: number): Promise<DirectorySnapshot> =>
+  invoke("remove_appointment", { userId, positionId });
+
+export const updateAppointmentPeriod = (userId: number, positionId: number, period: string): Promise<DirectorySnapshot> =>
+  invoke("update_appointment_period", { userId, positionId, period });
+
 export const runMatching = (): Promise<AllocationSnapshot> => invoke("run_matching");
 
 /// Probe SSH push access to the intranet repo. Resolves to a confirmation

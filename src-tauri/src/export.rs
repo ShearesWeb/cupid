@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use cupid::export::{by_file, merge, AppointmentRow};
+use cupid::export::{AppointmentRow, by_file, merge};
 
 pub const INTRANET_REMOTE: &str = "git@github.com:ShearesWeb/intranet.git";
 pub const INTRANET_WEB: &str = "https://github.com/ShearesWeb/intranet";
@@ -108,7 +108,9 @@ pub fn check_push_access() -> Result<(), String> {
     if !output.stdout.is_empty() {
         return Ok(());
     }
-    Err(explain_ssh_failure(&String::from_utf8_lossy(&output.stderr)))
+    Err(explain_ssh_failure(&String::from_utf8_lossy(
+        &output.stderr,
+    )))
 }
 
 /// Run one git command in `dir`, surfacing stderr on failure. Never prompts:
@@ -139,7 +141,14 @@ pub fn publish(
     let files = write_rows(&checkout, rows)?;
     git(&checkout, &["checkout", "-b", &branch])?;
     git(&checkout, &["add", ALLOCATION_DIR])?;
-    git(&checkout, &["commit", "-m", "feat(cca-appointment): cupid allocation export"])?;
+    git(
+        &checkout,
+        &[
+            "commit",
+            "-m",
+            "feat(cca-appointment): cupid allocation export",
+        ],
+    )?;
     git(&checkout, &["push", "origin", &branch])?;
     Ok((files, branch.clone(), pr_url(&branch)))
 }
@@ -174,8 +183,8 @@ mod tests {
     }
 
     fn temp_repo(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("cupid-export-test-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("cupid-export-test-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -191,7 +200,10 @@ mod tests {
 
     #[test]
     fn split_remote_rejects_non_scp_urls() {
-        assert_eq!(split_remote("https://github.com/ShearesWeb/intranet.git"), None);
+        assert_eq!(
+            split_remote("https://github.com/ShearesWeb/intranet.git"),
+            None
+        );
         assert_eq!(split_remote("/local/path"), None);
     }
 
@@ -250,7 +262,10 @@ mod tests {
         let repo = temp_repo("creates");
         let files = write_rows(
             &repo,
-            vec![row("Alpha Beta", "Chair", "a@x"), row("Zeta", "Chair", "z@x")],
+            vec![
+                row("Alpha Beta", "Chair", "a@x"),
+                row("Zeta", "Chair", "z@x"),
+            ],
         )
         .unwrap();
         assert_eq!(
@@ -260,10 +275,9 @@ mod tests {
                 "data/cca-appointment/allocation/zeta.csv",
             ]
         );
-        let body = std::fs::read_to_string(
-            repo.join("data/cca-appointment/allocation/alpha_beta.csv"),
-        )
-        .unwrap();
+        let body =
+            std::fs::read_to_string(repo.join("data/cca-appointment/allocation/alpha_beta.csv"))
+                .unwrap();
         assert_eq!(
             body,
             "user_email,cca_name,position_name,commitment_period\n\
