@@ -3,8 +3,9 @@ use std::path::Path;
 
 use cupid::data::conn::ConnSpec;
 use cupid::data::preallocations::{self, PreallocationRecord};
+use cupid::directory::{CommitmentPeriod, DirectorySnapshot};
 use cupid::models::{ApplicantIdx, Pool, PositionIdx};
-use cupid::snapshot::Snapshot;
+use cupid::snapshot::AllocationSnapshot;
 use tauri::State;
 use tauri_plugin_dialog::DialogExt;
 use time::OffsetDateTime;
@@ -12,7 +13,7 @@ use time::format_description::well_known::Rfc3339;
 use tokio::task::block_in_place;
 
 use crate::export;
-use crate::state::{snapshot_of, AppState, Inputs};
+use crate::state::{AppState, Inputs, directory_snapshot_of, refresh_changes, snapshot_of};
 
 const NOT_CONNECTED: &str = "Not connected: supply the database credentials first.";
 
@@ -40,25 +41,36 @@ pub struct ExportReceipt {
 #[serde(rename_all = "camelCase")]
 pub struct PurgeReceipt {
     pub deleted: u64,
-    pub snapshot: Snapshot,
+    pub snapshot: AllocationSnapshot,
 }
 
 fn now_rfc3339() -> String {
-    OffsetDateTime::now_utc().format(&Rfc3339).expect("rfc3339 format")
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .expect("rfc3339 format")
 }
 
 /// The active connection target, or a friendly error when none is set.
 async fn spec_of(state: &State<'_, AppState>) -> Result<ConnSpec, String> {
-    state.conn.lock().await.clone().ok_or_else(|| NOT_CONNECTED.to_string())
+    state
+        .conn
+        .lock()
+        .await
+        .clone()
+        .ok_or_else(|| NOT_CONNECTED.to_string())
 }
 
 /// Load a complete, fresh input set: the corpus from the database (read-only)
 /// and the preallocations from the local store. Blocking.
 fn load_inputs(spec: &ConnSpec, store: &Path) -> Result<Inputs, String> {
-    let pool = cupid::data::db::load(spec).map_err(|e| e.to_string())?;
+    let loaded = cupid::data::db::load_all(spec).map_err(|e| e.to_string())?;
+    let pool = loaded.pool;
     let records = preallocations::read_file(store).map_err(|e| e.to_string())?;
     let (preallocations, warnings) = preallocations::resolve(&records, &pool);
     Ok(Inputs {
+        base_directory: loaded.directory.clone(),
+        directory: loaded.directory,
+        changes: Default::default(),
         pool,
         records,
         preallocations,
@@ -82,7 +94,9 @@ pub async fn connect(
 
     block_in_place(|| -> Result<(), String> {
         let mut client = spec.connect().map_err(|e| e.to_string())?;
-        client.batch_execute("SELECT 1").map_err(|e| e.to_string())?;
+        client
+            .batch_execute("SELECT 1")
+            .map_err(|e| e.to_string())?;
         Ok(())
     })?;
 
@@ -102,7 +116,7 @@ pub async fn connection_info(state: State<'_, AppState>) -> Result<Option<String
 /// Reload the corpus from Postgres and the preallocations from the local
 /// store. Invalidates any previous run: the returned snapshot has `run: None`.
 #[tauri::command]
-pub async fn sync(state: State<'_, AppState>) -> Result<Snapshot, String> {
+pub async fn sync(state: State<'_, AppState>) -> Result<AllocationSnapshot, String> {
     let mut guard = state.inputs.lock().await;
     let spec = spec_of(&state).await?;
     let store = state.store_path();
@@ -111,11 +125,78 @@ pub async fn sync(state: State<'_, AppState>) -> Result<Snapshot, String> {
     Ok(snapshot_of(guard.as_ref().expect("just set")))
 }
 
+/// Complete CCA directory from the same sync as the allocation inputs.
+/// Includes all positions and holders, plus CCAs that have no positions.
+#[tauri::command]
+pub async fn directory_snapshot(state: State<'_, AppState>) -> Result<DirectorySnapshot, String> {
+    let guard = state.inputs.lock().await;
+    let inputs = guard.as_ref().ok_or("Sync first: no directory loaded.")?;
+    Ok(directory_snapshot_of(inputs))
+}
+
+#[tauri::command]
+pub async fn add_appointment(
+    state: State<'_, AppState>,
+    user_id: i32,
+    position_id: i32,
+    period: CommitmentPeriod,
+) -> Result<DirectorySnapshot, String> {
+    let mut guard = state.inputs.lock().await;
+    let inputs = guard.as_mut().ok_or("Sync first: no directory loaded.")?;
+    let mut proposed = inputs.directory.clone();
+    proposed
+        .add_appointment(user_id, position_id, period)
+        .map_err(|error| error.to_string())?;
+    inputs.directory = proposed;
+    refresh_changes(inputs);
+    Ok(directory_snapshot_of(inputs))
+}
+
+#[tauri::command]
+pub async fn remove_appointment(
+    state: State<'_, AppState>,
+    user_id: i32,
+    position_id: i32,
+) -> Result<DirectorySnapshot, String> {
+    let mut guard = state.inputs.lock().await;
+    let inputs = guard.as_mut().ok_or("Sync first: no directory loaded.")?;
+    let mut proposed = inputs.directory.clone();
+    let removed = proposed
+        .remove_appointment(user_id, position_id)
+        .map_err(|error| error.to_string())?;
+    if !removed {
+        return Err(format!(
+            "User {user_id} does not hold position {position_id}."
+        ));
+    }
+    inputs.directory = proposed;
+    refresh_changes(inputs);
+    Ok(directory_snapshot_of(inputs))
+}
+
+#[tauri::command]
+pub async fn update_appointment_period(
+    state: State<'_, AppState>,
+    user_id: i32,
+    position_id: i32,
+    period: CommitmentPeriod,
+) -> Result<DirectorySnapshot, String> {
+    let mut guard = state.inputs.lock().await;
+    let inputs = guard.as_mut().ok_or("Sync first: no directory loaded.")?;
+    let mut proposed = inputs.directory.clone();
+    proposed
+        .update_appointment_period(user_id, position_id, period)
+        .map_err(|error| error.to_string())?;
+    inputs.directory = proposed;
+    refresh_changes(inputs);
+    Ok(directory_snapshot_of(inputs))
+}
+
 /// Run the allocation (preallocations, then IA over BlockComm, then GS over
 /// Main/Sub) against the loaded corpus. Stores the result and returns a
 /// snapshot carrying the RunView.
 #[tauri::command]
-pub async fn run_matching(state: State<'_, AppState>) -> Result<Snapshot, String> {
+pub async fn run_matching(state: State<'_, AppState>) -> Result<AllocationSnapshot, String> {
     let mut guard = state.inputs.lock().await;
     let inputs = guard.as_mut().ok_or("Sync first: no corpus loaded.")?;
     inputs.last_result = Some(block_in_place(|| {
@@ -134,13 +215,23 @@ pub async fn add_preallocation(
     applicant_id: i32,
     position_id: i32,
     note: Option<String>,
-) -> Result<Snapshot, String> {
+) -> Result<AllocationSnapshot, String> {
     let mut guard = state.inputs.lock().await;
     let inputs = guard.as_mut().ok_or("Sync first: no corpus loaded.")?;
-    inputs.pool.applicant(ApplicantIdx(applicant_id)).ok_or("Unknown applicant.")?;
-    inputs.pool.position(PositionIdx(position_id)).ok_or("Unknown position.")?;
+    inputs
+        .pool
+        .applicant(ApplicantIdx(applicant_id))
+        .ok_or("Unknown applicant.")?;
+    inputs
+        .pool
+        .position(PositionIdx(position_id))
+        .ok_or("Unknown position.")?;
 
-    let record = PreallocationRecord { user_id: applicant_id, position_id, note: note.clone() };
+    let record = PreallocationRecord {
+        user_id: applicant_id,
+        position_id,
+        note: note.clone(),
+    };
     match inputs
         .records
         .iter_mut()
@@ -149,8 +240,7 @@ pub async fn add_preallocation(
         Some(existing) => existing.note = record.note,
         None => inputs.records.push(record),
     }
-    preallocations::write_file(&state.store_path(), &inputs.records)
-        .map_err(|e| e.to_string())?;
+    preallocations::write_file(&state.store_path(), &inputs.records).map_err(|e| e.to_string())?;
 
     inputs.preallocations.grant_with_note(
         ApplicantIdx(applicant_id),
@@ -168,17 +258,18 @@ pub async fn remove_preallocation(
     state: State<'_, AppState>,
     applicant_id: i32,
     position_id: i32,
-) -> Result<Snapshot, String> {
+) -> Result<AllocationSnapshot, String> {
     let mut guard = state.inputs.lock().await;
     let inputs = guard.as_mut().ok_or("Sync first: no corpus loaded.")?;
 
     inputs
         .records
         .retain(|r| !(r.user_id == applicant_id && r.position_id == position_id));
-    preallocations::write_file(&state.store_path(), &inputs.records)
-        .map_err(|e| e.to_string())?;
+    preallocations::write_file(&state.store_path(), &inputs.records).map_err(|e| e.to_string())?;
 
-    inputs.preallocations.revoke(ApplicantIdx(applicant_id), PositionIdx(position_id));
+    inputs
+        .preallocations
+        .revoke(ApplicantIdx(applicant_id), PositionIdx(position_id));
     inputs.last_result = None;
     Ok(snapshot_of(inputs))
 }
@@ -237,7 +328,10 @@ pub async fn commit(
 ) -> Result<ExportReceipt, String> {
     let guard = state.inputs.lock().await;
     let inputs = guard.as_ref().ok_or("Sync first: no corpus loaded.")?;
-    let result = inputs.last_result.as_ref().ok_or("Run matching first: nothing to export.")?;
+    let result = inputs
+        .last_result
+        .as_ref()
+        .ok_or("Run matching first: nothing to export.")?;
     let excluded = excluded_set(&inputs.pool, &excluded)?;
     let rows = cupid::export::rows_from(result, &inputs.pool, &excluded);
     if rows.is_empty() {
@@ -253,18 +347,28 @@ pub async fn commit(
     let timestamp = now_rfc3339();
     let (files, branch, pr_url) =
         block_in_place(|| export::publish(&export_root, &timestamp, rows))?;
-    Ok(ExportReceipt { rows: row_count, files, branch, pr_url })
+    Ok(ExportReceipt {
+        rows: row_count,
+        files,
+        branch,
+        pr_url,
+    })
 }
 
 pub fn archive_rows(pool: &cupid::models::Pool) -> usize {
-    pool.applicants().map(|a| a.preferences().len()).sum::<usize>()
+    pool.applicants()
+        .map(|a| a.preferences().len())
+        .sum::<usize>()
         + pool.positions().map(|p| p.ranking().len()).sum::<usize>()
 }
 
 /// Export a full verified backup (corpus + committed + run) as JSON via a
 /// native save dialog. Must run before purge.
 #[tauri::command]
-pub async fn archive(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<ArchiveReceipt, String> {
+pub async fn archive(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ArchiveReceipt, String> {
     let (snapshot, rows) = {
         let guard = state.inputs.lock().await;
         let inputs = guard.as_ref().ok_or("Sync first: no corpus loaded.")?;
@@ -277,7 +381,10 @@ pub async fn archive(app: tauri::AppHandle, state: State<'_, AppState>) -> Resul
         &now_rfc3339()[..10] // YYYY-MM-DD
     );
     let path = tauri::async_runtime::spawn_blocking(move || {
-        app.dialog().file().set_file_name(&default_name).blocking_save_file()
+        app.dialog()
+            .file()
+            .set_file_name(&default_name)
+            .blocking_save_file()
     })
     .await
     .map_err(|e| e.to_string())?
@@ -289,9 +396,15 @@ pub async fn archive(app: tauri::AppHandle, state: State<'_, AppState>) -> Resul
         "rows": rows,
         "snapshot": snapshot,
     });
-    std::fs::write(&path, serde_json::to_vec_pretty(&export).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    Ok(ArchiveReceipt { path: path.display().to_string(), rows })
+    std::fs::write(
+        &path,
+        serde_json::to_vec_pretty(&export).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(ArchiveReceipt {
+        path: path.display().to_string(),
+        rows,
+    })
 }
 
 /// Permanently delete the preference rows in the database AND the local
@@ -304,10 +417,7 @@ pub async fn archive(app: tauri::AppHandle, state: State<'_, AppState>) -> Resul
 /// returned snapshot reflects the emptied market. Irreversible; the UI gates
 /// this behind a completed export + archive and a typed confirmation.
 #[tauri::command]
-pub async fn purge(
-    state: State<'_, AppState>,
-    excluded: Vec<i32>,
-) -> Result<PurgeReceipt, String> {
+pub async fn purge(state: State<'_, AppState>, excluded: Vec<i32>) -> Result<PurgeReceipt, String> {
     let mut guard = state.inputs.lock().await;
     let spec = spec_of(&state).await?;
     let inputs = guard.as_ref().ok_or("Sync first: no corpus loaded.")?;
@@ -321,10 +431,16 @@ pub async fn purge(
         let mut client = spec.connect_read_write().map_err(|e| e.to_string())?;
         let mut tx = client.transaction().map_err(|e| e.to_string())?;
         let user_rows = tx
-            .execute("DELETE FROM preferred_positions WHERE position_id <> ALL($1)", &[&held])
+            .execute(
+                "DELETE FROM preferred_positions WHERE position_id <> ALL($1)",
+                &[&held],
+            )
             .map_err(|e| e.to_string())?;
         let position_rows = tx
-            .execute("DELETE FROM preferred_candidates WHERE position_id <> ALL($1)", &[&held])
+            .execute(
+                "DELETE FROM preferred_candidates WHERE position_id <> ALL($1)",
+                &[&held],
+            )
             .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
         Ok(user_rows + position_rows)
@@ -335,7 +451,10 @@ pub async fn purge(
 
     let fresh = block_in_place(|| load_inputs(&spec, &store))?;
     *guard = Some(fresh);
-    Ok(PurgeReceipt { deleted, snapshot: snapshot_of(guard.as_ref().expect("just set")) })
+    Ok(PurgeReceipt {
+        deleted,
+        snapshot: snapshot_of(guard.as_ref().expect("just set")),
+    })
 }
 
 #[cfg(test)]
@@ -345,16 +464,37 @@ mod tests {
 
     fn two_position_pool() -> Pool {
         let positions = vec![
-            Position::new(10, Cca::new(1, "C"), "Chair".into(), None, 1,
-                PositionType::MainComm, vec![]),
-            Position::new(20, Cca::new(1, "C"), "Vice".into(), None, 1,
-                PositionType::MainComm, vec![]),
+            Position::new(
+                10,
+                Cca::new(1, "C"),
+                "Chair".into(),
+                None,
+                1,
+                PositionType::MainComm,
+                vec![],
+            ),
+            Position::new(
+                20,
+                Cca::new(1, "C"),
+                "Vice".into(),
+                None,
+                1,
+                PositionType::MainComm,
+                vec![],
+            ),
         ];
-        Pool::new(vec![Applicant::new(1, "A".into(), "a@x".into(), vec![])], positions)
+        Pool::new(
+            vec![Applicant::new(1, "A".into(), "a@x".into(), vec![])],
+            positions,
+        )
     }
 
     fn record(position_id: i32) -> PreallocationRecord {
-        PreallocationRecord { user_id: 1, position_id, note: None }
+        PreallocationRecord {
+            user_id: 1,
+            position_id,
+            note: None,
+        }
     }
 
     #[test]
@@ -386,8 +526,15 @@ mod tests {
 
     #[test]
     fn archive_rows_counts_prefs_plus_rankings() {
-        let positions = vec![Position::new(10, Cca::new(1, "C"), "P".into(), None, 1,
-            PositionType::MainComm, vec![ApplicantIdx(1), ApplicantIdx(2)])];
+        let positions = vec![Position::new(
+            10,
+            Cca::new(1, "C"),
+            "P".into(),
+            None,
+            1,
+            PositionType::MainComm,
+            vec![ApplicantIdx(1), ApplicantIdx(2)],
+        )];
         let applicants = vec![
             Applicant::new(1, "A".into(), "a@x".into(), vec![PositionIdx(10)]),
             Applicant::new(2, "B".into(), "b@x".into(), vec![]),

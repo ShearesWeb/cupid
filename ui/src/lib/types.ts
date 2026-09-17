@@ -2,9 +2,73 @@
 export type Status = "existing" | "allocated" | "preallocated" | "displaced" | "quota" | "noreturn" | "neutral";
 export type PositionType = "block" | "main" | "sub";
 
+export type DirectoryPositionType =
+  | "lead"
+  | "vice"
+  | "blockcomm"
+  | "maincomm"
+  | "subcomm"
+  | "team-manager"
+  | "member"
+  | "resident";
+
+export type CcaKind = "sports" | "committee" | "culture" | "jcrc" | "adhoc" | "supplementary";
+
+export type CommitmentPeriod = "semester-1" | "semester-2" | "full-year" | "ex-shearite";
+
+export interface DirectoryUser {
+  id: number;
+  name: string;
+  email: string;
+}
+
+export interface DirectoryCca {
+  id: number;
+  name: string;
+  kind: CcaKind;
+  tier: "none" | "tier-1" | "tier-2";
+  type: "none" | "type-a" | "type-b";
+  description: string | null;
+  imageUrl: string | null;
+}
+
+export interface DirectoryPosition {
+  id: number;
+  ccaId: number;
+  reportingPositionId: number | null;
+  positionType: DirectoryPositionType;
+  name: string;
+  description: string | null;
+  capacity: number | null;
+}
+
+export interface DirectoryAppointment {
+  userId: number;
+  positionId: number;
+  commitmentPeriod: CommitmentPeriod;
+  points: number;
+  teamStatus: "none" | "shortlisted" | "reserve" | "main-team" | "varsity";
+  createdAt: string | null;
+  status: "existing" | "added" | "modified";
+}
+
+export type DirectoryAppointmentChange =
+  | { kind: "add"; appointment: DirectoryAppointment }
+  | { kind: "remove"; userId: number; positionId: number }
+  | { kind: "changePeriod"; userId: number; positionId: number; from: CommitmentPeriod; to: CommitmentPeriod };
+
+export interface DirectorySnapshot {
+  users: DirectoryUser[];
+  ccas: DirectoryCca[];
+  positions: DirectoryPosition[];
+  appointments: DirectoryAppointment[];
+  changes: DirectoryAppointmentChange[];
+}
+
 export interface CcaView {
   id: number;
   name: string;
+  kind: string;
 }
 
 export interface PositionView {
@@ -91,7 +155,7 @@ export interface RunView {
   unfilled: UnfilledView[];
 }
 
-export interface Snapshot {
+export interface AllocationSnapshot {
   syncedAt: string;
   warnings: string[];
   ccas: CcaView[];
@@ -105,6 +169,9 @@ export interface Snapshot {
   run: RunView | null;
 }
 
+/** @deprecated Use AllocationSnapshot. Kept temporarily for existing screens. */
+export type Snapshot = AllocationSnapshot;
+
 export interface ExportReceipt {
   rows: number;
   files: string[];
@@ -114,5 +181,5 @@ export interface ExportReceipt {
 
 export interface PurgeReceipt {
   deleted: number;
-  snapshot: Snapshot;
+  snapshot: AllocationSnapshot;
 }

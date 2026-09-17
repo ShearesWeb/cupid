@@ -11,7 +11,7 @@ import { errorMessage } from "../lib/format.ts";
 import * as api from "../lib/api.ts";
 import type { Indexes } from "../lib/indexes.ts";
 import { groupAdds, heldBackRows, includedAdds, type CcaGroup } from "../lib/selection.ts";
-import type { AssignmentView, Snapshot } from "../lib/types.ts";
+import type { AssignmentView, DirectorySnapshot, Snapshot } from "../lib/types.ts";
 import type { ToastKind } from "../components/Toasts.tsx";
 import { RunPrompt, Section } from "./shared.tsx";
 
@@ -32,6 +32,7 @@ export interface CommitState {
 
 export interface ReviewProps {
   snapshot: Snapshot;
+  directory: DirectorySnapshot;
   idx: Indexes;
   commitState: CommitState;
   purgeText: string;
@@ -45,7 +46,7 @@ export interface ReviewProps {
 }
 
 export function Review(props: ReviewProps) {
-  const { snapshot, idx, commitState, purgeText, onCommitState, onPurgeText, onOpenMatch, toast, running, onRun, onApplySnapshot } = props;
+  const { snapshot, directory, idx, commitState, purgeText, onCommitState, onPurgeText, onOpenMatch, toast, running, onRun, onApplySnapshot } = props;
   const hasRun = snapshot.run !== null;
 
   // After an export the stepper must stay visible even if the corpus is
@@ -100,8 +101,23 @@ export function Review(props: ReviewProps) {
       <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
         <CountPill label="existing committed" value={snapshot.committed.length} color="var(--token-color-foreground-action)" />
         <CountPill label={commitState.exported ? "exported this run" : "to allocate"} value={`+${addCount}`} color="var(--token-color-foreground-success)" />
+        <CountPill label="directory changes" value={directory.changes.length} color={directory.changes.length ? "var(--token-color-foreground-warning)" : undefined} />
         <CountPill label="seats filled" value={`${filled} / ${totalSeats}`} />
       </div>
+      {directory.changes.length ? (
+        <Section title="Pending directory changes">
+          {directory.changes.map((change, index) => {
+            const positionId = "positionId" in change ? change.positionId : change.appointment.positionId;
+            const position = directory.positions.find((item) => item.id === positionId);
+            const userId = "userId" in change ? change.userId : change.appointment.userId;
+            const user = directory.users.find((item) => item.id === userId);
+            const detail = change.kind === "changePeriod"
+              ? `${periodLabel(change.from)} -> ${periodLabel(change.to)}`
+              : change.kind === "add" ? "Added" : "Removed";
+            return <div key={`${change.kind}-${userId}-${positionId}-${index}`} style={{ display: "flex", gap: 10, padding: "9px 0", borderTop: "1px solid var(--token-color-border-faint)", fontSize: 12.5 }}><strong>{user?.name ?? `User ${userId}`}</strong><span>{position?.name ?? `Position ${positionId}`}</span><span style={{ color: "var(--token-color-foreground-faint)" }}>{detail}</span></div>;
+          })}
+        </Section>
+      ) : null}
       <Section title="Changes to export">
         {groups.length ? (
           <>
@@ -150,6 +166,10 @@ export function Review(props: ReviewProps) {
       />
     </div>
   );
+}
+
+function periodLabel(period: string): string {
+  return period.replace("semester-", "Semester ").replace("full-year", "Full year").replace("ex-shearite", "Ex-Shearite");
 }
 
 // ---- count pill (reference 594-598) ---------------------------------

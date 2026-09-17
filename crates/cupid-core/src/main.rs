@@ -34,7 +34,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{} positions with open seats", unfilled.len());
     for (pid, open) in unfilled {
         if let Some(position) = pool.position(pid) {
-            println!("  - {} - {}: {} open", position.cca.name, position.name, open);
+            println!(
+                "  - {} - {}: {} open",
+                position.cca.name, position.name, open
+            );
         }
     }
     Ok(())

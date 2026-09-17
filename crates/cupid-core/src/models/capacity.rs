@@ -104,7 +104,12 @@ impl CapacityStore {
     }
 
     fn bump_cca(&mut self, applicant: ApplicantIdx, cca: CcaIdx, delta: i8) {
-        let held = self.ccas.entry(applicant).or_default().entry(cca).or_insert(0);
+        let held = self
+            .ccas
+            .entry(applicant)
+            .or_default()
+            .entry(cca)
+            .or_insert(0);
         *held = held.saturating_add_signed(delta);
     }
 
@@ -115,7 +120,11 @@ impl CapacityStore {
         let mut store = CapacityStore::new();
         for appointment in pool.appointments().iter() {
             if let Some(position) = pool.position(appointment.position) {
-                store.grant(appointment.applicant, position.position_type, position.cca.id);
+                store.grant(
+                    appointment.applicant,
+                    position.position_type,
+                    position.cca.id,
+                );
             }
         }
         for &(applicant, cca) in pool.external_occupancy() {
@@ -178,7 +187,10 @@ mod tests {
     #[test]
     fn within_quota_matches_rule() {
         assert!(held(1, 1, 0).within_quota());
-        assert!(held(1, 1, 1).within_quota(), "2 main/block + 1 sub is legal");
+        assert!(
+            held(1, 1, 1).within_quota(),
+            "2 main/block + 1 sub is legal"
+        );
         assert!(held(0, 0, 3).within_quota());
         assert!(!held(2, 1, 0).within_quota(), "3 main/block");
         assert!(!held(0, 1, 2).within_quota(), "cross rule");
@@ -253,7 +265,10 @@ mod tests {
         assert!(!store.can_grant(a, MainComm, CcaIdx(5)));
         store.revoke(a, SubComm, CcaIdx(5));
         assert_eq!(store.cca_held(a, CcaIdx(5)), 0);
-        assert!(store.can_grant(a, MainComm, CcaIdx(5)), "slot freed by revoke");
+        assert!(
+            store.can_grant(a, MainComm, CcaIdx(5)),
+            "slot freed by revoke"
+        );
     }
 
     #[test]

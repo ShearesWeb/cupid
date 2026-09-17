@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ExportReceipt, PurgeReceipt, Snapshot } from "./types";
+import type { ExportReceipt, PurgeReceipt, AllocationSnapshot, DirectorySnapshot } from "./types";
 
 /// Verify Supabase credentials and store them as the active connection.
 /// Resolves to a display label for the target (never contains the password).
@@ -12,9 +12,20 @@ export const connect = (
 /// Display label of the active connection, or null when none is configured.
 export const connectionInfo = (): Promise<string | null> => invoke("connection_info");
 
-export const sync = (): Promise<Snapshot> => invoke("sync");
+export const sync = (): Promise<AllocationSnapshot> => invoke("sync");
 
-export const runMatching = (): Promise<Snapshot> => invoke("run_matching");
+export const directorySnapshot = (): Promise<DirectorySnapshot> => invoke("directory_snapshot");
+
+export const addAppointment = (userId: number, positionId: number, period: string): Promise<DirectorySnapshot> =>
+  invoke("add_appointment", { userId, positionId, period });
+
+export const removeAppointment = (userId: number, positionId: number): Promise<DirectorySnapshot> =>
+  invoke("remove_appointment", { userId, positionId });
+
+export const updateAppointmentPeriod = (userId: number, positionId: number, period: string): Promise<DirectorySnapshot> =>
+  invoke("update_appointment_period", { userId, positionId, period });
+
+export const runMatching = (): Promise<AllocationSnapshot> => invoke("run_matching");
 
 /// Probe SSH push access to the intranet repo. Resolves to a confirmation
 /// line; rejects with operator guidance when the key or permission is missing.
@@ -36,7 +47,7 @@ export const addPreallocation = (
   applicantId: number,
   positionId: number,
   note: string | null,
-): Promise<Snapshot> => invoke("add_preallocation", { applicantId, positionId, note });
+): Promise<AllocationSnapshot> => invoke("add_preallocation", { applicantId, positionId, note });
 
-export const removePreallocation = (applicantId: number, positionId: number): Promise<Snapshot> =>
+export const removePreallocation = (applicantId: number, positionId: number): Promise<AllocationSnapshot> =>
   invoke("remove_preallocation", { applicantId, positionId });

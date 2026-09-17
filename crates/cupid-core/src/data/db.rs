@@ -1,28 +1,39 @@
 use std::error::Error;
 
 use super::conn::ConnSpec;
-use super::resolve::{derive, Records};
-use super::{appointments, chair_preferences, positions, user_preferences, users};
+use super::resolve::from_directory;
+use super::{chair_preferences, directory, user_preferences};
+use crate::directory::Directory;
 use crate::models::Pool;
+use postgres::IsolationLevel;
+
+pub struct LoadedData {
+    pub directory: Directory,
+    pub pool: Pool,
+}
 
 /// Load the corpus from the database `spec` points at. Read-only: cupid's
 /// preallocations live in a local store (see `data::preallocations`), not in
 /// the database.
 pub fn load(spec: &ConnSpec) -> Result<Pool, Box<dyn Error>> {
-    let mut client = spec.connect()?;
+    Ok(load_all(spec)?.pool)
+}
 
-    let user_records = users::load(&mut client)?;
-    let position_records = positions::load(&mut client)?;
-    let user_prefs = user_preferences::load(&mut client)?;
-    let chair_prefs = chair_preferences::load(&mut client)?;
-    let appts = appointments::load(&mut client)?;
-    Ok(derive(&Records {
-        users: &user_records,
-        positions: &position_records,
-        user_prefs: &user_prefs,
-        chair_prefs: &chair_prefs,
-        appointments: &appts,
-    }))
+/// Read both views from one consistent database revision, including CCAs with
+/// no positions. No directory edit or allocation result is persisted here.
+pub fn load_all(spec: &ConnSpec) -> Result<LoadedData, Box<dyn Error>> {
+    let mut client = spec.connect()?;
+    let mut transaction = client
+        .build_transaction()
+        .isolation_level(IsolationLevel::RepeatableRead)
+        .read_only(true)
+        .start()?;
+    let directory = directory::load(&mut transaction)?;
+    let user_prefs = user_preferences::load(&mut transaction)?;
+    let chair_prefs = chair_preferences::load(&mut transaction)?;
+    let pool = from_directory(&directory, &user_prefs, &chair_prefs)?;
+    transaction.commit()?;
+    Ok(LoadedData { directory, pool })
 }
 
 #[cfg(test)]

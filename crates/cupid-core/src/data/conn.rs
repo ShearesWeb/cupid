@@ -302,7 +302,10 @@ mod tests {
         let spec = ConnSpec::Url("host=h user=u".into());
         let config = spec.configs().unwrap().remove(0);
         assert!(
-            config.get_options().unwrap_or("").contains("default_transaction_read_only=on")
+            config
+                .get_options()
+                .unwrap_or("")
+                .contains("default_transaction_read_only=on")
         );
     }
 
@@ -311,7 +314,10 @@ mod tests {
         let spec = ConnSpec::supabase("abcdefghijklmnopqrst", "pw", None);
         let config = spec.configs_read_write().unwrap().remove(0);
         assert!(
-            !config.get_options().unwrap_or("").contains("default_transaction_read_only"),
+            !config
+                .get_options()
+                .unwrap_or("")
+                .contains("default_transaction_read_only"),
             "purge must be able to write"
         );
     }
@@ -381,7 +387,10 @@ mod tests {
         // Config carries the password out-of-band, so URL-hostile characters
         // must survive untouched.
         let spec = ConnSpec::supabase("abcdefghijklmnopqrst", "p@ss:w/rd%25 #", None);
-        assert_eq!(only(&spec).get_password(), Some("p@ss:w/rd%25 #".as_bytes()));
+        assert_eq!(
+            only(&spec).get_password(),
+            Some("p@ss:w/rd%25 #".as_bytes())
+        );
     }
 
     #[test]

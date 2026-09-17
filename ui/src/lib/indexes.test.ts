@@ -5,7 +5,7 @@ import type { Snapshot } from "./types";
 const snap: Snapshot = {
   syncedAt: "2026-07-07T00:00:00Z",
   warnings: [],
-  ccas: [{ id: 1, name: "Chess" }],
+  ccas: [{ id: 1, name: "Chess", kind: "committee" }],
   positions: [
     { id: 10, ccaId: 1, name: "Head", type: "main", capacity: 1, chairRank: [1, 2] },
     { id: 11, ccaId: 1, name: "Sub", type: "sub", capacity: 2, chairRank: [3] },

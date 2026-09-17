@@ -55,7 +55,9 @@ pub fn run(pool: &Roster, store: &mut CapacityStore, ledger: &mut Ledger) {
         for (pid, proposers) in &proposals {
             let position = pool.position(*pid).unwrap();
             // Preallocations may overfill a position; saturate instead of underflowing.
-            let mut seats_left = position.vacancies().saturating_sub(ledger.holder_count(*pid));
+            let mut seats_left = position
+                .vacancies()
+                .saturating_sub(ledger.holder_count(*pid));
 
             // Walk chair ranking (best first) so seats go to top proposers.
             let mut seated: BTreeSet<ApplicantIdx> = BTreeSet::new();

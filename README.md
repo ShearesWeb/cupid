@@ -13,10 +13,10 @@ curl -fsSL https://raw.githubusercontent.com/ShearesWeb/cupid/main/install.sh | 
 
 The script resolves the latest release and installs the build for your machine:
 
-| Platform | Asset | Lands in |
-|---|---|---|
-| macOS (Apple Silicon) | `Cupid_aarch64.app.tar.gz` | `/Applications/Cupid.app`, or `~/Applications` if the former is not writable |
-| Linux (x86_64) | `Cupid_<version>_amd64.AppImage` | `~/.local/lib/cupid/`, with a `cupid` symlink in `~/.local/bin` and a desktop entry |
+| Platform              | Asset                            | Lands in                                                                            |
+| --------------------- | -------------------------------- | ----------------------------------------------------------------------------------- |
+| macOS (Apple Silicon) | `Cupid_aarch64.app.tar.gz`       | `/Applications/Cupid.app`, or `~/Applications` if the former is not writable        |
+| Linux (x86_64)        | `Cupid_<version>_amd64.AppImage` | `~/.local/lib/cupid/`, with a `cupid` symlink in `~/.local/bin` and a desktop entry |
 
 Intel Macs and arm64 Linux have no published build; those have to build from source.
 On Windows, run the `.exe` installer from the [releases page](https://github.com/ShearesWeb/cupid/releases/latest).
@@ -32,16 +32,40 @@ Note that the `.deb` published alongside the AppImage cannot self-update.
 ## Overview
 
 A Rust engine wrapped in a Tauri desktop shell, with a React console on top.
-All domain logic stays in Rust — the UI is a renderer over one snapshot the engine hands it.
+All domain logic stays in Rust. The allocation UI renders the engine snapshot;
+a separate directory snapshot supplies all CCAs, positions and appointment holders.
 
-| Crate / dir | Role | Stack |
-|---|---|---|
+| Crate / dir         | Role                                                                                                                                                                                                 | Stack                            |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
 | `crates/cupid-core` | The engine: domain model, the preallocation, immediate-acceptance and Gale-Shapley passes, and the `snapshot` read model that serves every UI query as a lookup. Also builds the `cupid` CLI binary. | Rust 2024, `postgres` + `rustls` |
-| `src-tauri` | Desktop shell and command surface: `connect`, `sync`, `run_matching`, preallocation add/remove, `commit`, `archive`, `purge`. | Tauri 2, `tokio` |
-| `ui` | The console. Builds lookup maps from the snapshot and renders; no domain logic. | React 19, TypeScript, Vite 8 |
+| `src-tauri`         | Desktop shell and command surface: `connect`, `sync`, `run_matching`, preallocation add/remove, `commit`, `archive`, `purge`.                                                                        | Tauri 2, `tokio`                 |
+| `ui`                | The console. Builds lookup maps from the snapshot and renders; no domain logic.                                                                                                                      | React 19, TypeScript, Vite 8     |
 
 Data loads read-only from a Supabase Postgres instance, configured in-app.
 Committing a run exports per-CCA CSVs as a merge request against the intranet repo rather than writing appointments back.
+
+The `cupid::directory` models represent all eight database position types and
+preserve CCA metadata, reporting positions, nullable capacity, commitment periods,
+points and team status. `data::db::load_all` loads the directory and derives the
+allocation pool within one read-only, repeatable-read transaction. CCAs without
+positions remain visible in the directory. After `sync`, the desktop command
+`directory_snapshot` returns its sorted read model for the future homepage.
+
+`Directory::add_appointment`, `remove_appointment` and `update_appointment_period`
+validate in-memory edits for lead, vice, blockcomm, maincomm, subcomm and team-manager
+positions. Member and resident appointments are read-only. Validation follows the
+database's per-semester capacity and non-resident CCA overlap rules. New in-memory
+holdings start with zero points, no team status and no persisted creation timestamp;
+period updates preserve existing metadata. These methods do not persist edits, and
+no appointment mutation commands are exposed until the persistence workflow is chosen.
+
+The allocator still accepts only block/main/sub committee positions with known
+capacity and treats existing appointments as full-year. Its algorithms, quota rules,
+preallocations, snapshot contract and allocation CSV export are unchanged. Persisted
+holder changes take effect on the next sync, which clears the previous matching run.
+
+See [the developer handoff](DEVELOPER_HANDOFF.md) for the exact Rust model,
+frontend contract, outstanding persistence decision and feature completion checklist.
 
 ## Development
 
@@ -64,6 +88,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 Run `npm run dev -w ui` alone only to work on styling, since `invoke()` has no host outside the app.
 
 The live-DB smoke test is ignored by default: `cargo test -p cupid db_load_against_live_database -- --ignored`.
+The directory SQL integration test uses temporary tables and rolls back its fixture:
+`CUPID_TEST_DATABASE_URL=postgres://… cargo test -p cupid directory_load_against_postgres -- --ignored`.
+Use a disposable local PostgreSQL instance for that test (its test connection uses no TLS).
 
 To build a local installable copy without release signing keys:
 

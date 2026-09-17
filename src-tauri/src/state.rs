@@ -2,11 +2,15 @@ use std::path::PathBuf;
 
 use cupid::data::conn::ConnSpec;
 use cupid::data::preallocations::PreallocationRecord;
+use cupid::directory::{CcaAppointmentChange, CcaAppointmentChangeSet, Directory};
 use cupid::models::{MatchResult, Pool, Preallocations};
-use cupid::snapshot::{self, Snapshot};
+use cupid::snapshot::{self, AllocationSnapshot};
 use tokio::sync::Mutex;
 
 pub struct Inputs {
+    pub base_directory: Directory,
+    pub directory: Directory,
+    pub changes: CcaAppointmentChangeSet,
     pub pool: Pool,
     /// The local store's raw records, stale entries included: the store file
     /// is the source of truth and a save must never drop an entry merely
@@ -56,12 +60,65 @@ impl AppState {
 }
 
 /// Project the current inputs into the immutable read model served to the UI.
-pub fn snapshot_of(inputs: &Inputs) -> Snapshot {
-    snapshot::build(
+pub fn snapshot_of(inputs: &Inputs) -> AllocationSnapshot {
+    snapshot::build_with_directory(
+        &inputs.directory,
         &inputs.pool,
         &inputs.preallocations,
         inputs.last_result.as_ref(),
         inputs.synced_at.clone(),
         inputs.warnings.clone(),
     )
+}
+
+pub fn directory_snapshot_of(inputs: &Inputs) -> cupid::directory::DirectorySnapshot {
+    inputs.directory.snapshot_with_changes(&inputs.changes)
+}
+
+pub fn refresh_changes(inputs: &mut Inputs) {
+    let mut changes = Vec::new();
+    let mut keys = std::collections::BTreeSet::new();
+    keys.extend(
+        inputs
+            .base_directory
+            .appointments()
+            .map(|a| (a.user_id, a.position_id)),
+    );
+    keys.extend(
+        inputs
+            .directory
+            .appointments()
+            .map(|a| (a.user_id, a.position_id)),
+    );
+
+    for (user_id, position_id) in keys {
+        match (
+            inputs.base_directory.appointment(user_id, position_id),
+            inputs.directory.appointment(user_id, position_id),
+        ) {
+            (None, Some(appointment)) => changes.push(CcaAppointmentChange::Add {
+                appointment: appointment.clone(),
+            }),
+            (Some(_), None) => changes.push(CcaAppointmentChange::Remove {
+                user_id,
+                position_id,
+            }),
+            (Some(original), Some(current))
+                if original.commitment_period != current.commitment_period =>
+            {
+                changes.push(CcaAppointmentChange::ChangePeriod {
+                    user_id,
+                    position_id,
+                    from: original.commitment_period,
+                    to: current.commitment_period,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    inputs.changes = CcaAppointmentChangeSet {
+        base_sync: inputs.synced_at.clone(),
+        changes,
+    };
 }

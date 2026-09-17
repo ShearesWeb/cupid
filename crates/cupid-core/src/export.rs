@@ -32,7 +32,12 @@ pub fn rows_from(
     let mut rows: Vec<AppointmentRow> = result
         .all()
         .filter(|a| !excluded.contains(&a.position_id))
-        .filter(|a| !pool.appointments().held_by(a.applicant_id).contains(&a.position_id))
+        .filter(|a| {
+            !pool
+                .appointments()
+                .held_by(a.applicant_id)
+                .contains(&a.position_id)
+        })
         .filter_map(|a| {
             let applicant = pool.applicant(a.applicant_id)?;
             let position = pool.position(a.position_id)?;
@@ -66,7 +71,10 @@ pub fn slug(name: &str) -> String {
 pub fn by_file(rows: Vec<AppointmentRow>) -> BTreeMap<String, Vec<AppointmentRow>> {
     let mut files: BTreeMap<String, Vec<AppointmentRow>> = BTreeMap::new();
     for row in rows {
-        files.entry(format!("{}.csv", slug(&row.cca_name))).or_default().push(row);
+        files
+            .entry(format!("{}.csv", slug(&row.cca_name)))
+            .or_default()
+            .push(row);
     }
     files
 }
@@ -120,8 +128,8 @@ pub fn merge(existing: Option<&str>, rows: &[AppointmentRow]) -> String {
 mod tests {
     use super::*;
     use crate::models::{
-        Algorithm, Applicant, ApplicantIdx, Appointment, Appointments, Cca, Ledger, Pool,
-        Position, PositionIdx, PositionType,
+        Algorithm, Applicant, ApplicantIdx, Appointment, Appointments, Cca, Ledger, Pool, Position,
+        PositionIdx, PositionType,
     };
 
     fn row(cca: &str, position: &str, email: &str) -> AppointmentRow {
@@ -134,17 +142,26 @@ mod tests {
 
     #[test]
     fn rows_map_allocations_to_names_and_exclude_existing_appointments() {
-        let positions = vec![Position::new(10, Cca::new(1, "Sheares Media"), "Chair".into(),
-            None, 2, PositionType::MainComm, vec![ApplicantIdx(1), ApplicantIdx(2)])];
+        let positions = vec![Position::new(
+            10,
+            Cca::new(1, "Sheares Media"),
+            "Chair".into(),
+            None,
+            2,
+            PositionType::MainComm,
+            vec![ApplicantIdx(1), ApplicantIdx(2)],
+        )];
         let applicants = vec![
             Applicant::new(1, "Ann".into(), "ann@x".into(), vec![PositionIdx(10)]),
             Applicant::new(2, "Ben".into(), "ben@x".into(), vec![PositionIdx(10)]),
         ];
         // Ben already holds position 10: his pair must not re-export.
-        let pool = Pool::new(applicants.clone(), positions.clone())
-            .with_appointments(Appointments::from_iter([
-                Appointment { applicant: ApplicantIdx(2), position: PositionIdx(10) },
-            ]));
+        let pool = Pool::new(applicants.clone(), positions.clone()).with_appointments(
+            Appointments::from_iter([Appointment {
+                applicant: ApplicantIdx(2),
+                position: PositionIdx(10),
+            }]),
+        );
         let mut ledger = Ledger::new(Algorithm::GaleShapley);
         ledger.accept(&applicants[0], &positions[0]);
         ledger.accept(&applicants[1], &positions[0]);
@@ -156,13 +173,32 @@ mod tests {
     #[test]
     fn rows_are_sorted_by_cca_then_position_then_email() {
         let positions = vec![
-            Position::new(20, Cca::new(2, "Zeta"), "Chair".into(), None, 1,
-                PositionType::MainComm, vec![ApplicantIdx(1)]),
-            Position::new(10, Cca::new(1, "Alpha"), "Chair".into(), None, 2,
-                PositionType::MainComm, vec![ApplicantIdx(1), ApplicantIdx(2)]),
+            Position::new(
+                20,
+                Cca::new(2, "Zeta"),
+                "Chair".into(),
+                None,
+                1,
+                PositionType::MainComm,
+                vec![ApplicantIdx(1)],
+            ),
+            Position::new(
+                10,
+                Cca::new(1, "Alpha"),
+                "Chair".into(),
+                None,
+                2,
+                PositionType::MainComm,
+                vec![ApplicantIdx(1), ApplicantIdx(2)],
+            ),
         ];
         let applicants = vec![
-            Applicant::new(1, "Ann".into(), "b@x".into(), vec![PositionIdx(20), PositionIdx(10)]),
+            Applicant::new(
+                1,
+                "Ann".into(),
+                "b@x".into(),
+                vec![PositionIdx(20), PositionIdx(10)],
+            ),
             Applicant::new(2, "Ben".into(), "a@x".into(), vec![PositionIdx(10)]),
         ];
         let pool = Pool::new(applicants.clone(), positions.clone());
@@ -172,35 +208,62 @@ mod tests {
         ledger.accept(&applicants[1], &positions[1]);
 
         let rows = rows_from(&ledger.finish(), &pool, &HashSet::new());
-        assert_eq!(rows, vec![
-            row("Alpha", "Chair", "a@x"),
-            row("Alpha", "Chair", "b@x"),
-            row("Zeta", "Chair", "b@x"),
-        ]);
+        assert_eq!(
+            rows,
+            vec![
+                row("Alpha", "Chair", "a@x"),
+                row("Alpha", "Chair", "b@x"),
+                row("Zeta", "Chair", "b@x"),
+            ]
+        );
     }
 
     #[test]
     fn rows_include_preallocated_seats() {
         // A preallocated pair lands in the result via the preallocation pass
         // and must be exported like any other allocation.
-        let positions = vec![Position::new(10, Cca::new(1, "Club"), "Chair".into(), None, 1,
-            PositionType::MainComm, vec![])];
+        let positions = vec![Position::new(
+            10,
+            Cca::new(1, "Club"),
+            "Chair".into(),
+            None,
+            1,
+            PositionType::MainComm,
+            vec![],
+        )];
         let applicants = vec![Applicant::new(1, "Ann".into(), "ann@x".into(), vec![])];
         let pool = Pool::new(applicants, positions);
         let mut preallocations = crate::models::Preallocations::new();
         preallocations.grant(ApplicantIdx(1), PositionIdx(10));
 
         let result = crate::algorithm::run(&pool, &preallocations);
-        assert_eq!(rows_from(&result, &pool, &HashSet::new()), vec![row("Club", "Chair", "ann@x")]);
+        assert_eq!(
+            rows_from(&result, &pool, &HashSet::new()),
+            vec![row("Club", "Chair", "ann@x")]
+        );
     }
 
     #[test]
     fn rows_omit_excluded_positions() {
         let positions = vec![
-            Position::new(10, Cca::new(1, "Alpha"), "Chair".into(), None, 1,
-                PositionType::MainComm, vec![ApplicantIdx(1)]),
-            Position::new(20, Cca::new(1, "Alpha"), "Vice".into(), None, 1,
-                PositionType::MainComm, vec![ApplicantIdx(2)]),
+            Position::new(
+                10,
+                Cca::new(1, "Alpha"),
+                "Chair".into(),
+                None,
+                1,
+                PositionType::MainComm,
+                vec![ApplicantIdx(1)],
+            ),
+            Position::new(
+                20,
+                Cca::new(1, "Alpha"),
+                "Vice".into(),
+                None,
+                1,
+                PositionType::MainComm,
+                vec![ApplicantIdx(2)],
+            ),
         ];
         let applicants = vec![
             Applicant::new(1, "Ann".into(), "ann@x".into(), vec![PositionIdx(10)]),
@@ -222,8 +285,15 @@ mod tests {
 
     #[test]
     fn excluding_a_position_also_holds_back_its_preallocated_seats() {
-        let positions = vec![Position::new(10, Cca::new(1, "Club"), "Chair".into(), None, 1,
-            PositionType::MainComm, vec![])];
+        let positions = vec![Position::new(
+            10,
+            Cca::new(1, "Club"),
+            "Chair".into(),
+            None,
+            1,
+            PositionType::MainComm,
+            vec![],
+        )];
         let applicants = vec![Applicant::new(1, "Ann".into(), "ann@x".into(), vec![])];
         let pool = Pool::new(applicants, positions);
         let mut preallocations = crate::models::Preallocations::new();
@@ -253,12 +323,18 @@ mod tests {
             files.keys().cloned().collect::<Vec<_>>(),
             vec!["alpha_beta.csv", "zeta.csv"]
         );
-        assert_eq!(files["alpha_beta.csv"], vec![rows[0].clone(), rows[2].clone()]);
+        assert_eq!(
+            files["alpha_beta.csv"],
+            vec![rows[0].clone(), rows[2].clone()]
+        );
     }
 
     #[test]
     fn csv_line_orders_fields_and_appends_commitment_period() {
-        assert_eq!(csv_line(&row("Alpha", "Chair", "a@x")), "a@x,Alpha,Chair,full-year");
+        assert_eq!(
+            csv_line(&row("Alpha", "Chair", "a@x")),
+            "a@x,Alpha,Chair,full-year"
+        );
     }
 
     #[test]
@@ -272,7 +348,10 @@ mod tests {
     #[test]
     fn merge_creates_a_new_file_with_header() {
         let body = merge(None, &[row("Alpha", "Chair", "a@x")]);
-        assert_eq!(body, "user_email,cca_name,position_name,commitment_period\na@x,Alpha,Chair,full-year\n");
+        assert_eq!(
+            body,
+            "user_email,cca_name,position_name,commitment_period\na@x,Alpha,Chair,full-year\n"
+        );
     }
 
     #[test]
@@ -281,7 +360,10 @@ mod tests {
                         old@x,Alpha,Chair,full-year\n";
         let body = merge(
             Some(existing),
-            &[row("Alpha", "Chair", "old@x"), row("Alpha", "Chair", "new@x")],
+            &[
+                row("Alpha", "Chair", "old@x"),
+                row("Alpha", "Chair", "new@x"),
+            ],
         );
         assert_eq!(
             body,

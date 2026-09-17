@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use postgres::Client;
+use postgres::GenericClient;
 
 /// One row of `users`. Every resident belongs in the corpus whether or not
 /// they applied: the operator preallocates against this list, and a person
@@ -13,7 +13,7 @@ pub struct UserRecord {
 }
 
 /// Load the DB `users` into `UserRecord`s.
-pub fn load(client: &mut Client) -> Result<Vec<UserRecord>, Box<dyn Error>> {
+pub fn load(client: &mut impl GenericClient) -> Result<Vec<UserRecord>, Box<dyn Error>> {
     let rows = client.query("SELECT id, name, email FROM users", &[])?;
     Ok(rows
         .iter()

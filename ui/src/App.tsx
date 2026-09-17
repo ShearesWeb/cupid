@@ -3,7 +3,7 @@
 // and replaces the mock splash loader with a real "sync to load" empty state.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import * as api from "./lib/api.ts";
-import type { PositionType, Snapshot } from "./lib/types.ts";
+import type { DirectorySnapshot, PositionType, Snapshot } from "./lib/types.ts";
 import { buildIndexes, type Indexes } from "./lib/indexes.ts";
 import { errorMessage, fmtTime } from "./lib/format.ts";
 import { Icon, Card, Button } from "./components/index.ts";
@@ -22,9 +22,10 @@ import { DetailPage as DetailPageScreen } from "./screens/DetailPage.tsx";
 import { EventSidebar as EventSidebarScreen } from "./screens/EventSidebar.tsx";
 import { Preallocations as PreallocationsScreen } from "./screens/Preallocations.tsx";
 import { Review as ReviewScreen, type CommitState } from "./screens/Review.tsx";
+import { Ccas as CcasScreen } from "./screens/Ccas.tsx";
 import { TextInput } from "./components/TextInput.tsx";
 
-type Screen = "alloc" | "prealloc" | "review";
+type Screen = "alloc" | "ccas" | "prealloc" | "review";
 type View = "position" | "applicant";
 type TypeFilter = "all" | PositionType;
 type Detail = { type: "applicant" | "position"; id: number } | null;
@@ -46,6 +47,7 @@ const initialCommitState: CommitState = {
 
 export interface UiState {
   snapshot: Snapshot | null;
+  directory: DirectorySnapshot | null;
   idx: Indexes | null;
   screen: Screen;
   view: View;
@@ -76,6 +78,9 @@ export interface UiHandlers {
   setPurgeText: (v: string) => void;
   addPreallocation: (applicantId: number, positionId: number, note: string | null) => Promise<boolean>;
   removePreallocation: (applicantId: number, positionId: number) => Promise<boolean>;
+  addAppointment: (userId: number, positionId: number, period: string) => Promise<boolean>;
+  removeAppointment: (userId: number, positionId: number) => Promise<boolean>;
+  updateAppointmentPeriod: (userId: number, positionId: number, period: string) => Promise<boolean>;
   applySnapshot: (snap: Snapshot) => void;
 }
 
@@ -83,6 +88,7 @@ let toastSeq = 0;
 
 function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [directory, setDirectory] = useState<DirectorySnapshot | null>(null);
   const [theme, setTheme] = useState<Theme>("light");
   const [screen, setScreenState] = useState<Screen>("alloc");
   const [view, setViewState] = useState<View>("position");
@@ -154,7 +160,9 @@ function App() {
     setSyncing(true);
     try {
       const snap = await api.sync();
+      const directorySnapshot = await api.directorySnapshot();
       setSnapshot(snap);
+      setDirectory(directorySnapshot);
       setCommitState(initialCommitState);
       setPurgeText("");
       setDetail(null);
@@ -212,6 +220,39 @@ function App() {
     }
   };
 
+  const addAppointment = async (userId: number, positionId: number, period: string) => {
+    try {
+      setDirectory(await api.addAppointment(userId, positionId, period));
+      toast("success", "Appointment added to the pending changes.");
+      return true;
+    } catch (e) {
+      toast("error", errorMessage(e));
+      return false;
+    }
+  };
+
+  const removeAppointment = async (userId: number, positionId: number) => {
+    try {
+      setDirectory(await api.removeAppointment(userId, positionId));
+      toast("success", "Appointment removed from the pending changes.");
+      return true;
+    } catch (e) {
+      toast("error", errorMessage(e));
+      return false;
+    }
+  };
+
+  const updateAppointmentPeriod = async (userId: number, positionId: number, period: string) => {
+    try {
+      setDirectory(await api.updateAppointmentPeriod(userId, positionId, period));
+      toast("success", "Commitment period updated in the pending changes.");
+      return true;
+    } catch (e) {
+      toast("error", errorMessage(e));
+      return false;
+    }
+  };
+
   // Verify credentials, adopt the new target, and pull its corpus. The old
   // snapshot dies with the old database; a connect failure leaves everything
   // untouched and surfaces inline on the form (toasts vanish too fast for
@@ -227,6 +268,7 @@ function App() {
       setConnInfo(label);
       setChangingConn(false);
       setSnapshot(null);
+      setDirectory(null);
       setCommitState(initialCommitState);
       setPurgeText("");
       setDetail(null);
@@ -309,6 +351,7 @@ function App() {
 
   const ui: UiState = {
     snapshot,
+    directory,
     idx,
     screen,
     view,
@@ -339,6 +382,9 @@ function App() {
     setPurgeText,
     addPreallocation,
     removePreallocation,
+    addAppointment,
+    removeAppointment,
+    updateAppointmentPeriod,
     applySnapshot,
   };
 
@@ -409,6 +455,8 @@ function App() {
             <DetailPage ui={ui} handlers={handlers} onBack={() => setDetail(null)} />
           ) : screen === "alloc" ? (
             <Allocations ui={ui} handlers={handlers} />
+          ) : screen === "ccas" ? (
+            <Ccas ui={ui} handlers={handlers} />
           ) : screen === "prealloc" ? (
             <PreallocationsWrapper ui={ui} handlers={handlers} />
           ) : (
@@ -837,6 +885,7 @@ function Sidebar({
 }) {
   const items: { id: Screen; label: string; icon: string }[] = [
     { id: "alloc", label: "Allocations", icon: "layers" },
+    { id: "ccas", label: "CCAs", icon: "folder" },
     { id: "prealloc", label: "Preallocations", icon: "tag" },
     { id: "review", label: "Review & commit", icon: "lock" },
   ];
@@ -1036,11 +1085,17 @@ function Allocations({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
   );
 }
 
+function Ccas({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
+  if (!ui.directory) return null;
+  return <CcasScreen directory={ui.directory} onAdd={handlers.addAppointment} onRemove={handlers.removeAppointment} onUpdatePeriod={handlers.updateAppointmentPeriod} />;
+}
+
 function Review({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
   if (!ui.snapshot || !ui.idx) return null;
   return (
     <ReviewScreen
       snapshot={ui.snapshot}
+      directory={ui.directory ?? { users: [], ccas: [], positions: [], appointments: [], changes: [] }}
       idx={ui.idx}
       commitState={ui.commitState}
       purgeText={ui.purgeText}
