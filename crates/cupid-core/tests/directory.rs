@@ -1,6 +1,6 @@
 use cupid::directory::{
-    Cca, CcaAppointment, CcaKind, CcaPosition, CcaTier, CcaType, CommitmentPeriod, Directory,
-    DirectoryError, PositionKind, TeamStatus, User,
+    Cca, CcaAppointment, CcaAppointmentChange, CcaAppointmentChangeSet, CcaKind, CcaPosition,
+    CcaTier, CcaType, CommitmentPeriod, Directory, DirectoryError, PositionKind, TeamStatus, User,
 };
 
 fn position(id: i32, kind: PositionKind, capacity: Option<usize>) -> CcaPosition {
@@ -332,4 +332,94 @@ fn loaded_directory_rejects_duplicate_entities_and_broken_position_references() 
         Directory::new(snapshot.users, snapshot.ccas, self_parent, vec![]),
         Err(DirectoryError::InvalidReference(_))
     ));
+}
+
+/// The UI reads every change field by its camelCase name (`lib/types.ts`,
+/// `screens/Review.tsx`). A struct variant that serializes `user_id` instead
+/// leaves the UI dereferencing an absent `appointment`, which blanks the app.
+#[test]
+fn change_set_json_is_camel_case_for_every_variant() {
+    let directory = fixture(vec![holding(1, 16, CommitmentPeriod::FullYear)]);
+    let changes = CcaAppointmentChangeSet {
+        base_sync: "2026-08-01T00:00:00Z".into(),
+        changes: vec![
+            CcaAppointmentChange::Add {
+                appointment: holding(2, 16, CommitmentPeriod::Semester1),
+            },
+            CcaAppointmentChange::Remove {
+                user_id: 1,
+                position_id: 16,
+            },
+            CcaAppointmentChange::ChangePeriod {
+                user_id: 3,
+                position_id: 16,
+                from: CommitmentPeriod::FullYear,
+                to: CommitmentPeriod::Semester2,
+            },
+        ],
+    };
+    let json = serde_json::to_value(directory.snapshot_with_changes(&changes)).unwrap();
+    let emitted = &json["changes"];
+
+    assert_eq!(emitted[0]["kind"], "add");
+    assert_eq!(emitted[0]["appointment"]["userId"], 2);
+    assert_eq!(emitted[0]["appointment"]["positionId"], 16);
+
+    assert_eq!(emitted[1]["kind"], "remove");
+    assert_eq!(emitted[1]["userId"], 1);
+    assert_eq!(emitted[1]["positionId"], 16);
+
+    assert_eq!(emitted[2]["kind"], "changePeriod");
+    assert_eq!(emitted[2]["userId"], 3);
+    assert_eq!(emitted[2]["positionId"], 16);
+    assert_eq!(emitted[2]["from"], "full-year");
+    assert_eq!(emitted[2]["to"], "semester-2");
+
+    for change in emitted.as_array().unwrap() {
+        for key in change.as_object().unwrap().keys() {
+            assert!(!key.contains('_'), "snake_case key leaked to the UI: {key}");
+        }
+    }
+}
+
+/// An operator who removes a holder and puts them back has undone their edit,
+/// not rewritten the record: points, team status and creation time belong to
+/// the database, and `add_appointment` alone would reset all three.
+#[test]
+fn restoring_a_removed_holding_keeps_the_database_metadata() {
+    let original = holding(1, 16, CommitmentPeriod::FullYear);
+    let mut directory = fixture(vec![original.clone()]);
+    directory.remove_appointment(1, 16).unwrap();
+
+    let mut reinstated = original.clone();
+    reinstated.commitment_period = CommitmentPeriod::Semester2;
+    directory.restore_appointment(reinstated).unwrap();
+
+    let restored = directory.appointment(1, 16).unwrap();
+    assert_eq!(restored.points, 42);
+    assert_eq!(restored.team_status, TeamStatus::Varsity);
+    assert_eq!(restored.created_at, original.created_at);
+    assert_eq!(restored.commitment_period, CommitmentPeriod::Semester2);
+}
+
+/// Restoring is an add, so it answers to the same rules: it cannot duplicate a
+/// live holding, touch a read-only position, or exceed capacity.
+#[test]
+fn restoring_obeys_the_same_rules_as_adding() {
+    let original = holding(1, 10, CommitmentPeriod::FullYear);
+    let mut directory = fixture(vec![original.clone()]);
+    assert!(matches!(
+        directory.restore_appointment(original.clone()),
+        Err(DirectoryError::DuplicateAppointment { .. })
+    ));
+    assert!(matches!(
+        directory.restore_appointment(holding(2, 17, CommitmentPeriod::FullYear)),
+        Err(DirectoryError::ReadOnlyPosition(17))
+    ));
+    // Position 10 has one seat and user 1 still holds it for the full year.
+    assert!(matches!(
+        directory.restore_appointment(holding(2, 10, CommitmentPeriod::Semester1)),
+        Err(DirectoryError::CapacityExceeded { .. })
+    ));
+    assert_eq!(directory.appointment(1, 10), Some(&original));
 }

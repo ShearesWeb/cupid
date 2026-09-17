@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { Card, Icon } from "../components/index.ts";
 import type {
   CommitmentPeriod,
-  DirectoryAppointment,
+  DirectoryAppointmentView,
   DirectoryCca,
   DirectoryPosition,
   DirectoryPositionType,
@@ -70,7 +70,7 @@ function CcaCard({ cca, positionCount, onClick }: { cca: DirectoryCca; positionC
 
 function CcaDetail({ cca, directory, onBack, onAdd, onRemove, onUpdatePeriod }: { cca: DirectoryCca; directory: DirectorySnapshot; onBack: () => void; onAdd: CcasProps["onAdd"]; onRemove: CcasProps["onRemove"]; onUpdatePeriod: CcasProps["onUpdatePeriod"] }) {
   const positions = directory.positions.filter((position) => position.ccaId === cca.id).sort((a, b) => a.id - b.id);
-  const appointmentsByPosition = new Map<number, DirectoryAppointment[]>();
+  const appointmentsByPosition = new Map<number, DirectoryAppointmentView[]>();
   for (const appointment of directory.appointments) {
     const list = appointmentsByPosition.get(appointment.positionId);
     if (list) list.push(appointment);
@@ -103,7 +103,7 @@ function CcaDetail({ cca, directory, onBack, onAdd, onRemove, onUpdatePeriod }: 
   );
 }
 
-function PositionRow({ position, appointments, users, userById, positionById, onAdd, onRemove, onUpdatePeriod }: { position: DirectoryPosition; appointments: DirectoryAppointment[]; users: { id: number; name: string; email: string }[]; userById: Map<number, { name: string; email: string }>; positionById: Map<number, DirectoryPosition>; onAdd: CcasProps["onAdd"]; onRemove: CcasProps["onRemove"]; onUpdatePeriod: CcasProps["onUpdatePeriod"] }) {
+function PositionRow({ position, appointments, users, userById, positionById, onAdd, onRemove, onUpdatePeriod }: { position: DirectoryPosition; appointments: DirectoryAppointmentView[]; users: { id: number; name: string; email: string }[]; userById: Map<number, { name: string; email: string }>; positionById: Map<number, DirectoryPosition>; onAdd: CcasProps["onAdd"]; onRemove: CcasProps["onRemove"]; onUpdatePeriod: CcasProps["onUpdatePeriod"] }) {
   const reporting = position.reportingPositionId ? positionById.get(position.reportingPositionId) : null;
   const [selectedPeriod, setSelectedPeriod] = useState<CommitmentPeriod>("full-year");
   const editable = position.positionType !== "resident";

@@ -153,7 +153,14 @@ pub struct CcaAppointmentView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+// `rename_all` renames the variants only; struct-variant fields need
+// `rename_all_fields`, without which `Remove` and `ChangePeriod` would reach
+// the UI as snake_case while every other type in the API is camelCase.
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum CcaAppointmentChange {
     Add {
         appointment: CcaAppointment,

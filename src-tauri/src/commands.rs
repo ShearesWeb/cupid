@@ -3,7 +3,7 @@ use std::path::Path;
 
 use cupid::data::conn::ConnSpec;
 use cupid::data::preallocations::{self, PreallocationRecord};
-use cupid::directory::{CommitmentPeriod, DirectorySnapshot};
+use cupid::directory::{CommitmentPeriod, Directory, DirectoryError, DirectorySnapshot};
 use cupid::models::{ApplicantIdx, Pool, PositionIdx};
 use cupid::snapshot::AllocationSnapshot;
 use tauri::State;
@@ -134,6 +134,27 @@ pub async fn directory_snapshot(state: State<'_, AppState>) -> Result<DirectoryS
     Ok(directory_snapshot_of(inputs))
 }
 
+/// Adding a pair the database still holds is an operator undoing their own
+/// removal, so the stored record comes back rather than a blank one: points,
+/// team status and creation time are the database's, not the operator's. The
+/// period is theirs, and `refresh_changes` reports it if it moved.
+fn apply_add(
+    directory: &mut Directory,
+    base: &Directory,
+    user_id: i32,
+    position_id: i32,
+    period: CommitmentPeriod,
+) -> Result<(), DirectoryError> {
+    match base.appointment(user_id, position_id) {
+        Some(stored) => {
+            let mut restored = stored.clone();
+            restored.commitment_period = period;
+            directory.restore_appointment(restored)
+        }
+        None => directory.add_appointment(user_id, position_id, period),
+    }
+}
+
 #[tauri::command]
 pub async fn add_appointment(
     state: State<'_, AppState>,
@@ -144,9 +165,14 @@ pub async fn add_appointment(
     let mut guard = state.inputs.lock().await;
     let inputs = guard.as_mut().ok_or("Sync first: no directory loaded.")?;
     let mut proposed = inputs.directory.clone();
-    proposed
-        .add_appointment(user_id, position_id, period)
-        .map_err(|error| error.to_string())?;
+    apply_add(
+        &mut proposed,
+        &inputs.base_directory,
+        user_id,
+        position_id,
+        period,
+    )
+    .map_err(|error| error.to_string())?;
     inputs.directory = proposed;
     refresh_changes(inputs);
     Ok(directory_snapshot_of(inputs))
@@ -460,7 +486,81 @@ pub async fn purge(state: State<'_, AppState>, excluded: Vec<i32>) -> Result<Pur
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cupid::directory::{
+        Cca as DirCca, CcaAppointment, CcaKind, CcaPosition, CcaTier, CcaType, PositionKind,
+        TeamStatus, User,
+    };
     use cupid::models::*;
+
+    fn directory_with_holder() -> Directory {
+        Directory::new(
+            vec![User {
+                id: 1,
+                name: "Ann".into(),
+                email: "ann@x".into(),
+            }],
+            vec![DirCca {
+                id: 1,
+                name: "Chess".into(),
+                kind: CcaKind::Committee,
+                tier: CcaTier::None,
+                cca_type: CcaType::TypeA,
+                description: None,
+                image_url: None,
+            }],
+            vec![CcaPosition {
+                id: 16,
+                cca_id: 1,
+                reporting_position_id: None,
+                position_type: PositionKind::Member,
+                name: "Member".into(),
+                description: None,
+                capacity: None,
+            }],
+            vec![CcaAppointment {
+                user_id: 1,
+                position_id: 16,
+                commitment_period: CommitmentPeriod::FullYear,
+                points: 42,
+                team_status: TeamStatus::Varsity,
+                created_at: Some("2026-08-01T00:00:00Z".into()),
+            }],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn re_adding_a_removed_holder_restores_the_stored_record() {
+        let base = directory_with_holder();
+        let mut directory = base.clone();
+        directory.remove_appointment(1, 16).unwrap();
+        apply_add(&mut directory, &base, 1, 16, CommitmentPeriod::Semester2).unwrap();
+
+        let restored = directory.appointment(1, 16).unwrap();
+        assert_eq!(restored.points, 42, "the database's points survive");
+        assert_eq!(restored.team_status, TeamStatus::Varsity);
+        assert_eq!(restored.created_at.as_deref(), Some("2026-08-01T00:00:00Z"));
+        assert_eq!(
+            restored.commitment_period,
+            CommitmentPeriod::Semester2,
+            "the operator's period is the one edit that lands"
+        );
+    }
+
+    #[test]
+    fn a_holder_the_database_never_had_is_added_blank() {
+        let base = directory_with_holder();
+        let mut directory = base.clone();
+        directory.remove_appointment(1, 16).unwrap();
+        // Same directory, but nothing stored for this pair to restore from.
+        let empty = Directory::new(vec![], vec![], vec![], vec![]).unwrap();
+        apply_add(&mut directory, &empty, 1, 16, CommitmentPeriod::Semester1).unwrap();
+
+        let added = directory.appointment(1, 16).unwrap();
+        assert_eq!(added.points, 0);
+        assert_eq!(added.team_status, TeamStatus::None);
+        assert_eq!(added.created_at, None);
+    }
 
     fn two_position_pool() -> Pool {
         let positions = vec![

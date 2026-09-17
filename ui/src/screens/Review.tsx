@@ -107,9 +107,11 @@ export function Review(props: ReviewProps) {
       {directory.changes.length ? (
         <Section title="Pending directory changes">
           {directory.changes.map((change, index) => {
-            const positionId = "positionId" in change ? change.positionId : change.appointment.positionId;
+            // Discriminate on `kind`, the tag the union is actually built on: a
+            // probe for `positionId` reads as valid TypeScript but silently
+            // dereferences an absent `appointment` the moment the wire names drift.
+            const { userId, positionId } = change.kind === "add" ? change.appointment : change;
             const position = directory.positions.find((item) => item.id === positionId);
-            const userId = "userId" in change ? change.userId : change.appointment.userId;
             const user = directory.users.find((item) => item.id === userId);
             const detail = change.kind === "changePeriod"
               ? `${periodLabel(change.from)} -> ${periodLabel(change.to)}`
