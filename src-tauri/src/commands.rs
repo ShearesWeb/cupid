@@ -3,7 +3,7 @@ use std::path::Path;
 
 use cupid::data::conn::ConnSpec;
 use cupid::data::preallocations::{self, PreallocationRecord};
-use cupid::directory::{CommitmentPeriod, DirectorySnapshot};
+use cupid::directory::{CcaAppointmentChange, CommitmentPeriod, DirectorySnapshot};
 use cupid::models::{ApplicantIdx, Pool, PositionIdx};
 use cupid::snapshot::AllocationSnapshot;
 use tauri::State;
@@ -42,6 +42,87 @@ pub struct ExportReceipt {
 pub struct PurgeReceipt {
     pub deleted: u64,
     pub snapshot: AllocationSnapshot,
+}
+
+fn directory_export_changes(
+    inputs: &Inputs,
+    excluded: &HashSet<PositionIdx>,
+) -> Result<Vec<export::DirectoryChangeRow>, String> {
+    inputs
+        .changes
+        .changes
+        .iter()
+        .map(|change| {
+            let (user_id, position_id, kind, period) = match change {
+                CcaAppointmentChange::Add { appointment } => (
+                    appointment.user_id,
+                    appointment.position_id,
+                    export::DirectoryChangeKind::Add,
+                    appointment.commitment_period,
+                ),
+                CcaAppointmentChange::Remove { user_id, position_id } => (
+                    *user_id,
+                    *position_id,
+                    export::DirectoryChangeKind::Remove,
+                    inputs
+                        .base_directory
+                        .appointment(*user_id, *position_id)
+                        .ok_or("Directory changed since sync.")?
+                        .commitment_period,
+                ),
+                CcaAppointmentChange::ChangePeriod { user_id, position_id, to, .. } => (
+                    *user_id,
+                    *position_id,
+                    export::DirectoryChangeKind::ChangePeriod,
+                    *to,
+                ),
+            };
+            if excluded.contains(&PositionIdx(position_id)) {
+                return Ok(None);
+            }
+            let user = inputs
+                .directory
+                .user(user_id)
+                .or_else(|| inputs.base_directory.user(user_id))
+                .ok_or("Directory changed since sync: user no longer exists.")?;
+            let position = inputs
+                .directory
+                .position(position_id)
+                .or_else(|| inputs.base_directory.position(position_id))
+                .ok_or("Directory changed since sync: position no longer exists.")?;
+            let cca = inputs
+                .directory
+                .cca(position.cca_id)
+                .or_else(|| inputs.base_directory.cca(position.cca_id))
+                .ok_or("Directory changed since sync: CCA no longer exists.")?;
+            let category = match cca.kind.as_str() {
+                "committee" => "committees",
+                "culture" => "cultures",
+                other => other,
+            };
+            Ok(Some(export::DirectoryChangeRow {
+                path: format!("data/cca-appointment/{category}/{}.csv", slug(&cca.name)),
+                user_email: user.email.clone(),
+                cca_name: cca.name.clone(),
+                position_name: position.name.clone(),
+                commitment_period: period.as_str().to_string(),
+                kind,
+            }))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|changes| changes.into_iter().flatten().collect())
+}
+
+fn slug(name: &str) -> String {
+    let mut out = String::new();
+    for character in name.chars() {
+        if character.is_ascii_alphanumeric() {
+            out.push(character.to_ascii_lowercase());
+        } else if !out.is_empty() && !out.ends_with('_') {
+            out.push('_');
+        }
+    }
+    out.trim_end_matches('_').to_string()
 }
 
 fn now_rfc3339() -> String {
@@ -328,13 +409,14 @@ pub async fn commit(
 ) -> Result<ExportReceipt, String> {
     let guard = state.inputs.lock().await;
     let inputs = guard.as_ref().ok_or("Sync first: no corpus loaded.")?;
-    let result = inputs
+    let excluded = excluded_set(&inputs.pool, &excluded)?;
+    let rows = inputs
         .last_result
         .as_ref()
-        .ok_or("Run matching first: nothing to export.")?;
-    let excluded = excluded_set(&inputs.pool, &excluded)?;
-    let rows = cupid::export::rows_from(result, &inputs.pool, &excluded);
-    if rows.is_empty() {
+        .map(|result| cupid::export::rows_from(result, &inputs.pool, &excluded))
+        .unwrap_or_default();
+    let directory_changes = directory_export_changes(inputs, &excluded)?;
+    if rows.is_empty() && directory_changes.is_empty() {
         return Err(if excluded.is_empty() {
             "Nothing to export: the run adds no new appointments.".to_string()
         } else {
@@ -342,11 +424,11 @@ pub async fn commit(
         });
     }
 
-    let row_count = rows.len();
+    let row_count = rows.len() + directory_changes.len();
     let export_root = state.export_root();
     let timestamp = now_rfc3339();
     let (files, branch, pr_url) =
-        block_in_place(|| export::publish(&export_root, &timestamp, rows))?;
+        block_in_place(|| export::publish_with_directory_changes(&export_root, &timestamp, rows, directory_changes))?;
     Ok(ExportReceipt {
         rows: row_count,
         files,

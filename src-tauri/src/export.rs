@@ -4,6 +4,10 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::io::Read;
+use std::process::Stdio;
+use std::sync::mpsc;
+use std::time::Duration;
 
 use cupid::export::{AppointmentRow, by_file, merge};
 
@@ -13,6 +17,23 @@ pub const INTRANET_WEB: &str = "https://github.com/ShearesWeb/intranet";
 /// Where cupid's CSVs live inside the intranet repo. Cupid owns this
 /// directory and never touches the human-maintained per-committee files.
 pub const ALLOCATION_DIR: &str = "data/cca-appointment/allocation";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DirectoryChangeKind {
+    Add,
+    Remove,
+    ChangePeriod,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryChangeRow {
+    pub path: String,
+    pub user_email: String,
+    pub cca_name: String,
+    pub position_name: String,
+    pub commitment_period: String,
+    pub kind: DirectoryChangeKind,
+}
 
 /// Branch for one export, derived from an RFC 3339 timestamp:
 /// `cupid/allocation-YYYYMMDD-HHMMSS`.
@@ -54,6 +75,95 @@ pub fn write_rows(repo: &Path, rows: Vec<AppointmentRow>) -> Result<Vec<String>,
     Ok(written)
 }
 
+pub fn write_directory_changes(
+    repo: &Path,
+    changes: Vec<DirectoryChangeRow>,
+) -> Result<Vec<String>, String> {
+    let mut by_path: std::collections::BTreeMap<String, Vec<DirectoryChangeRow>> =
+        std::collections::BTreeMap::new();
+    for change in changes {
+        by_path.entry(change.path.clone()).or_default().push(change);
+    }
+
+    let mut written = Vec::new();
+    for (relative, changes) in by_path {
+        let path = repo.join(&relative);
+        let existing = std::fs::read_to_string(&path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut lines: Vec<String> = existing.lines().map(String::from).collect();
+        for change in changes {
+            let index = lines.iter().position(|line| {
+                let Some(fields) = parse_csv_line(line) else { return false };
+                fields.len() == 4
+                    && fields[0] == change.user_email
+                    && fields[1] == change.cca_name
+                    && fields[2] == change.position_name
+            });
+            match change.kind {
+                DirectoryChangeKind::Add => {
+                    if index.is_none() {
+                        lines.push(csv_line(&change));
+                    }
+                }
+                DirectoryChangeKind::Remove => {
+                    let index = index.ok_or_else(|| {
+                        format!("Could not remove stale appointment from {relative}.")
+                    })?;
+                    lines.remove(index);
+                }
+                DirectoryChangeKind::ChangePeriod => {
+                    let index = index.ok_or_else(|| {
+                        format!("Could not update stale appointment in {relative}.")
+                    })?;
+                    lines[index] = csv_line(&change);
+                }
+            }
+        }
+        let mut body = lines.join("\n");
+        body.push('\n');
+        std::fs::write(&path, body).map_err(|e| format!("{}: {e}", path.display()))?;
+        written.push(relative);
+    }
+    Ok(written)
+}
+
+fn csv_line(change: &DirectoryChangeRow) -> String {
+    [&change.user_email, &change.cca_name, &change.position_name, &change.commitment_period]
+        .into_iter()
+        .map(|field| {
+            if field.contains([',', '"', '\n', '\r']) {
+                format!("\"{}\"", field.replace('"', "\"\""))
+            } else {
+                field.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn parse_csv_line(line: &str) -> Option<Vec<String>> {
+    let mut fields = Vec::new();
+    let mut field = String::new();
+    let mut quoted = false;
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match (ch, quoted) {
+            ('"', true) if chars.peek() == Some(&'"') => {
+                field.push('"');
+                chars.next();
+            }
+            ('"', _) => quoted = !quoted,
+            (',', false) => {
+                fields.push(std::mem::take(&mut field));
+            }
+            _ => field.push(ch),
+        }
+    }
+    (!quoted).then_some(())?;
+    fields.push(field);
+    Some(fields)
+}
+
 /// Split an scp-style remote (`git@host:path`) into its ssh destination and
 /// repository path. `None` for anything that is not scp-style.
 pub fn split_remote(remote: &str) -> Option<(&str, &str)> {
@@ -91,26 +201,53 @@ pub fn explain_ssh_failure(stderr: &str) -> String {
 pub fn check_push_access() -> Result<(), String> {
     let (host, path) = split_remote(INTRANET_REMOTE)
         .ok_or_else(|| format!("unsupported remote: {INTRANET_REMOTE}"))?;
-    let output = Command::new("ssh")
+    let mut child = Command::new("ssh")
         .args([
             "-o",
             "BatchMode=yes",
             "-o",
             "ConnectTimeout=10",
+            "-o",
+            "ConnectionAttempts=1",
             host,
             &format!("git-receive-pack '{path}'"),
         ])
         .stdin(std::process::Stdio::null())
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("ssh: {e}"))?;
-    // The advertisement (refs + capabilities) only appears on success; exit
-    // codes are unreliable here because we hang up mid-protocol.
-    if !output.stdout.is_empty() {
+
+    let mut stdout = child.stdout.take().ok_or("ssh: stdout was not captured")?;
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut byte = [0; 1];
+        let result = stdout.read(&mut byte);
+        let _ = sender.send(result);
+    });
+
+    let first_byte = receiver.recv_timeout(Duration::from_secs(12));
+    let access_granted = matches!(first_byte, Ok(Ok(count)) if count > 0);
+    let timed_out = matches!(first_byte, Err(mpsc::RecvTimeoutError::Timeout));
+    let _ = child.kill();
+    let _ = child.wait();
+
+    if access_granted {
         return Ok(());
     }
-    Err(explain_ssh_failure(&String::from_utf8_lossy(
-        &output.stderr,
-    )))
+    if timed_out {
+        return Err("SSH access check timed out after 12 seconds. Check network access and SSH configuration.".to_string());
+    }
+    let stderr = child
+        .stderr
+        .take()
+        .map(|mut stream| {
+            let mut output = Vec::new();
+            let _ = stream.read_to_end(&mut output);
+            output
+        })
+        .unwrap_or_default();
+    Err(explain_ssh_failure(&String::from_utf8_lossy(&stderr)))
 }
 
 /// Run one git command in `dir`, surfacing stderr on failure. Never prompts:
@@ -131,22 +268,28 @@ pub fn git(dir: &Path, args: &[&str]) -> Result<(), String> {
 
 /// The full publish: fresh shallow clone under `export_root`, CSVs written,
 /// branch committed and pushed. Returns (files written, branch, MR URL).
-pub fn publish(
+pub fn publish_with_directory_changes(
     export_root: &Path,
     rfc3339: &str,
     rows: Vec<AppointmentRow>,
+    directory_changes: Vec<DirectoryChangeRow>,
 ) -> Result<(Vec<String>, String, String), String> {
     let branch = branch_name(rfc3339);
     let checkout = clone_fresh(export_root, &branch)?;
-    let files = write_rows(&checkout, rows)?;
+    let mut files = if rows.is_empty() {
+        Vec::new()
+    } else {
+        write_rows(&checkout, rows)?
+    };
+    files.extend(write_directory_changes(&checkout, directory_changes)?);
     git(&checkout, &["checkout", "-b", &branch])?;
-    git(&checkout, &["add", ALLOCATION_DIR])?;
+    git(&checkout, &["add", "data/cca-appointment"])?;
     git(
         &checkout,
         &[
             "commit",
             "-m",
-            "feat(cca-appointment): cupid allocation export",
+            "feat(cca-appointment): cupid export",
         ],
     )?;
     git(&checkout, &["push", "origin", &branch])?;

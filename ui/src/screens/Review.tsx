@@ -11,7 +11,7 @@ import { errorMessage } from "../lib/format.ts";
 import * as api from "../lib/api.ts";
 import type { Indexes } from "../lib/indexes.ts";
 import { groupAdds, heldBackRows, includedAdds, type CcaGroup } from "../lib/selection.ts";
-import type { AssignmentView, DirectorySnapshot, Snapshot } from "../lib/types.ts";
+import type { AssignmentView, DirectoryAppointmentChange, DirectorySnapshot, Snapshot } from "../lib/types.ts";
 import type { ToastKind } from "../components/Toasts.tsx";
 import { RunPrompt, Section } from "./shared.tsx";
 
@@ -67,7 +67,7 @@ export function Review(props: ReviewProps) {
 
   const adds: AssignmentView[] = commitState.exported ? [] : [...idx.newAllocations, ...idx.preallocatedAllocations];
   const excluded = new Set(commitState.excluded);
-  const addCount = commitState.exported ? commitState.exportedRows : includedAdds(adds, excluded).length;
+  const allocationCount = includedAdds(adds, excluded).length;
   const totalSeats = snapshot.positions.reduce((s, p) => s + p.capacity, 0);
   let filled = 0;
   idx.seatsByPos.forEach((seated) => {
@@ -75,7 +75,13 @@ export function Review(props: ReviewProps) {
   });
 
   const groups = groupAdds(adds, snapshot);
-  const heldBackCount = adds.length - addCount;
+  const directoryGroups = commitState.exported ? [] : groupDirectoryChanges(directory.changes, directory);
+  const directoryChangeCount = commitState.exported ? 0 : directory.changes.filter((change) => {
+    const positionId = "appointment" in change ? change.appointment.positionId : change.positionId;
+    return !excluded.has(positionId);
+  }).length;
+  const addCount = commitState.exported ? commitState.exportedRows : allocationCount + directoryChangeCount;
+  const heldBackCount = adds.length - allocationCount;
 
   // The export and the purge must agree on what was held back, so the
   // checklist freezes the moment the branch is pushed.
@@ -95,27 +101,27 @@ export function Review(props: ReviewProps) {
         Review & commit
       </h1>
       <p style={{ margin: "0 0 18px", fontSize: 13, color: "var(--token-color-foreground-faint)", maxWidth: 620 }}>
-        These are the new allocations this run will export. Adds-only — existing appointments are never modified or deleted, and
-        nothing is written to the database: the export pushes CSV files as a merge request to the intranet repo.
+        These are the allocation and directory changes this run will export. Nothing is written to the database: the export pushes
+        CSV files as a merge request to the intranet repo.
       </p>
       <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
         <CountPill label="existing committed" value={snapshot.committed.length} color="var(--token-color-foreground-action)" />
-        <CountPill label={commitState.exported ? "exported this run" : "to allocate"} value={`+${addCount}`} color="var(--token-color-foreground-success)" />
+        <CountPill label={commitState.exported ? "exported this run" : "to publish"} value={`+${addCount}`} color="var(--token-color-foreground-success)" />
         <CountPill label="directory changes" value={directory.changes.length} color={directory.changes.length ? "var(--token-color-foreground-warning)" : undefined} />
         <CountPill label="seats filled" value={`${filled} / ${totalSeats}`} />
       </div>
-      {directory.changes.length ? (
+      {directoryGroups.length ? (
         <Section title="Pending directory changes">
-          {directory.changes.map((change, index) => {
-            const positionId = "positionId" in change ? change.positionId : change.appointment.positionId;
-            const position = directory.positions.find((item) => item.id === positionId);
-            const userId = "userId" in change ? change.userId : change.appointment.userId;
-            const user = directory.users.find((item) => item.id === userId);
-            const detail = change.kind === "changePeriod"
-              ? `${periodLabel(change.from)} -> ${periodLabel(change.to)}`
-              : change.kind === "add" ? "Added" : "Removed";
-            return <div key={`${change.kind}-${userId}-${positionId}-${index}`} style={{ display: "flex", gap: 10, padding: "9px 0", borderTop: "1px solid var(--token-color-border-faint)", fontSize: 12.5 }}><strong>{user?.name ?? `User ${userId}`}</strong><span>{position?.name ?? `Position ${positionId}`}</span><span style={{ color: "var(--token-color-foreground-faint)" }}>{detail}</span></div>;
-          })}
+          {directoryGroups.map((group) => (
+            <DirectoryDiffGroup
+              key={group.positionId}
+              group={group}
+              directory={directory}
+              excluded={excluded}
+              locked={commitState.exported}
+              onToggle={togglePositions}
+            />
+          ))}
         </Section>
       ) : null}
       <Section title="Changes to export">
@@ -170,6 +176,50 @@ export function Review(props: ReviewProps) {
 
 function periodLabel(period: string): string {
   return period.replace("semester-", "Semester ").replace("full-year", "Full year").replace("ex-shearite", "Ex-Shearite");
+}
+
+interface DirectoryDiffGroup {
+  ccaName: string;
+  positionId: number;
+  positionName: string;
+  changes: DirectoryAppointmentChange[];
+}
+
+function groupDirectoryChanges(changes: DirectoryAppointmentChange[], directory: DirectorySnapshot): DirectoryDiffGroup[] {
+  const groups = new Map<number, DirectoryDiffGroup>();
+  for (const change of changes) {
+    const positionId = "appointment" in change ? change.appointment.positionId : change.positionId;
+    const position = directory.positions.find((item) => item.id === positionId);
+    if (!position) continue;
+    const group = groups.get(positionId);
+    if (group) group.changes.push(change);
+    else {
+      const cca = directory.ccas.find((item) => item.id === position.ccaId);
+      groups.set(positionId, { ccaName: cca?.name ?? `CCA ${position.ccaId}`, positionId, positionName: position.name, changes: [change] });
+    }
+  }
+  return [...groups.values()];
+}
+
+function DirectoryDiffGroup({ group, directory, excluded, locked, onToggle }: { group: DirectoryDiffGroup; directory: DirectorySnapshot; excluded: Set<number>; locked: boolean; onToggle: (ids: number[], include: boolean) => void }) {
+  const held = excluded.has(group.positionId);
+  return (
+    <Card padding="none" style={{ overflow: "hidden", marginBottom: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "9px 14px", background: "var(--token-color-surface-faint)", borderBottom: "1px solid var(--token-color-border-faint)", fontFamily: "var(--token-typography-font-stack-code)", fontSize: 12.5 }}>
+        <Checkbox state={held ? "off" : "on"} disabled={locked} label={`Include ${group.positionName} directory changes`} onClick={() => onToggle([group.positionId], held)} />
+        <Icon name="folder" size={14} color="var(--token-color-foreground-faint)" />
+        <span style={{ fontWeight: 700, color: "var(--token-color-foreground-strong)" }}>{group.ccaName}</span>
+        <span style={{ color: held ? "var(--token-color-foreground-faint)" : "var(--token-color-foreground-warning)", fontWeight: 700 }}>{group.positionName}</span>
+        {held ? <span style={{ color: "var(--token-color-foreground-warning-on-surface)" }}>held back</span> : null}
+      </div>
+      {group.changes.map((change, index) => {
+        const userId = "appointment" in change ? change.appointment.userId : change.userId;
+        const user = directory.users.find((item) => item.id === userId);
+        const detail = change.kind === "changePeriod" ? `${periodLabel(change.from)} -> ${periodLabel(change.to)}` : change.kind === "add" ? "Added" : "Removed";
+        return <div key={`${change.kind}-${userId}-${index}`} style={{ display: "flex", gap: 10, padding: "7px 14px 7px 42px", borderBottom: "1px solid var(--token-color-border-faint)", fontSize: 12.5, opacity: held ? 0.55 : 1 }}><strong>{user?.name ?? `User ${userId}`}</strong><span style={{ color: "var(--token-color-foreground-faint)" }}>{detail}</span></div>;
+      })}
+    </Card>
+  );
 }
 
 // ---- count pill (reference 594-598) ---------------------------------
@@ -689,7 +739,7 @@ function FinalizeStepper({
         ) : (
           <>
             <div style={{ fontSize: 13, color: "var(--token-color-foreground-primary)", marginBottom: 12 }}>
-              Exports {addCount} new appointment{addCount === 1 ? "" : "s"} as CSV and pushes a branch to the intranet repo.
+              Exports {addCount} appointment change{addCount === 1 ? "" : "s"} as CSV and pushes a branch to the intranet repo.
               Nothing is written to the database.
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
@@ -719,7 +769,7 @@ function FinalizeStepper({
               )}
             </div>
             <Button color="primary" busy={busyExport} disabled={!commitState.accessChecked} onClick={doExport}>
-              Export {addCount} addition{addCount === 1 ? "" : "s"}
+              Export {addCount} change{addCount === 1 ? "" : "s"}
             </Button>
           </>
         )}
