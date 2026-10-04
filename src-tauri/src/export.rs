@@ -1,39 +1,23 @@
-//! Publishing a run to the intranet repo: clone, write the allocation CSVs,
-//! branch, push, and hand back the merge-request URL. The CSV content itself
-//! comes from `cupid::export`; this module owns the filesystem and git side.
+//! Publishing a run to the intranet repo: clone, write the allocation CSVs
+//! and directory edits, branch, push, and hand back the merge-request URL. The
+//! CSV content itself comes from `cupid::export`; this module owns the filesystem and git side.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::io::Read;
-use std::process::Stdio;
-use std::sync::mpsc;
-use std::time::Duration;
 
-use cupid::export::{AppointmentRow, by_file, merge};
+use cupid::export::{
+    AppointmentRow, DirectoryEdits, by_file, merge, merge_lines, rewrite, unplaced,
+};
 
 pub const INTRANET_REMOTE: &str = "git@github.com:ShearesWeb/intranet.git";
 pub const INTRANET_WEB: &str = "https://github.com/ShearesWeb/intranet";
 
-/// Where cupid's CSVs live inside the intranet repo. Cupid owns this
-/// directory and never touches the human-maintained per-committee files.
+/// Intranet reconciles every CSV here as one set.
+pub const APPOINTMENT_DIR: &str = "data/cca-appointment";
+
+/// Where cupid adds new rows. Edits to existing rows land in whichever file holds them.
 pub const ALLOCATION_DIR: &str = "data/cca-appointment/allocation";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DirectoryChangeKind {
-    Add,
-    Remove,
-    ChangePeriod,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DirectoryChangeRow {
-    pub path: String,
-    pub user_email: String,
-    pub cca_name: String,
-    pub position_name: String,
-    pub commitment_period: String,
-    pub kind: DirectoryChangeKind,
-}
 
 /// Branch for one export, derived from an RFC 3339 timestamp:
 /// `cupid/allocation-YYYYMMDD-HHMMSS`.
@@ -63,11 +47,7 @@ pub fn write_rows(repo: &Path, rows: Vec<AppointmentRow>) -> Result<Vec<String>,
     let mut written = Vec::new();
     for (file, rows) in by_file(rows) {
         let path = dir.join(&file);
-        let existing = match std::fs::read_to_string(&path) {
-            Ok(body) => Some(body),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(format!("{}: {e}", path.display())),
-        };
+        let existing = read_existing(&path)?;
         std::fs::write(&path, merge(existing.as_deref(), &rows))
             .map_err(|e| format!("{}: {e}", path.display()))?;
         written.push(format!("{ALLOCATION_DIR}/{file}"));
@@ -75,93 +55,72 @@ pub fn write_rows(repo: &Path, rows: Vec<AppointmentRow>) -> Result<Vec<String>,
     Ok(written)
 }
 
-pub fn write_directory_changes(
-    repo: &Path,
-    changes: Vec<DirectoryChangeRow>,
-) -> Result<Vec<String>, String> {
-    let mut by_path: std::collections::BTreeMap<String, Vec<DirectoryChangeRow>> =
-        std::collections::BTreeMap::new();
-    for change in changes {
-        by_path.entry(change.path.clone()).or_default().push(change);
+/// Returns the repo-relative paths written, sorted.
+pub fn write_edits(repo: &Path, edits: &DirectoryEdits) -> Result<Vec<String>, String> {
+    let mut found = BTreeSet::new();
+    let mut written = Vec::new();
+    for relative in csv_files(repo, APPOINTMENT_DIR)? {
+        let path = repo.join(&relative);
+        let body =
+            std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let (rewritten, held) = rewrite(&body, edits);
+        if held.is_empty() {
+            continue;
+        }
+        std::fs::write(&path, rewritten).map_err(|e| format!("{}: {e}", path.display()))?;
+        written.push(relative);
+        found.extend(held);
     }
 
-    let mut written = Vec::new();
-    for (relative, changes) in by_path {
-        let path = repo.join(&relative);
-        let existing = std::fs::read_to_string(&path)
+    let dir = repo.join(ALLOCATION_DIR);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    for (file, lines) in unplaced(edits, &found) {
+        let path = dir.join(&file);
+        let existing = read_existing(&path)?;
+        std::fs::write(&path, merge_lines(existing.as_deref(), lines))
             .map_err(|e| format!("{}: {e}", path.display()))?;
-        let mut lines: Vec<String> = existing.lines().map(String::from).collect();
-        for change in changes {
-            let index = lines.iter().position(|line| {
-                let Some(fields) = parse_csv_line(line) else { return false };
-                fields.len() == 4
-                    && fields[0] == change.user_email
-                    && fields[1] == change.cca_name
-                    && fields[2] == change.position_name
-            });
-            match change.kind {
-                DirectoryChangeKind::Add => {
-                    if index.is_none() {
-                        lines.push(csv_line(&change));
-                    }
-                }
-                DirectoryChangeKind::Remove => {
-                    let index = index.ok_or_else(|| {
-                        format!("Could not remove stale appointment from {relative}.")
-                    })?;
-                    lines.remove(index);
-                }
-                DirectoryChangeKind::ChangePeriod => {
-                    let index = index.ok_or_else(|| {
-                        format!("Could not update stale appointment in {relative}.")
-                    })?;
-                    lines[index] = csv_line(&change);
-                }
-            }
-        }
-        let mut body = lines.join("\n");
-        body.push('\n');
-        std::fs::write(&path, body).map_err(|e| format!("{}: {e}", path.display()))?;
-        written.push(relative);
+        written.push(format!("{ALLOCATION_DIR}/{file}"));
     }
+    written.sort();
+    written.dedup();
     Ok(written)
 }
 
-fn csv_line(change: &DirectoryChangeRow) -> String {
-    [&change.user_email, &change.cca_name, &change.position_name, &change.commitment_period]
-        .into_iter()
-        .map(|field| {
-            if field.contains([',', '"', '\n', '\r']) {
-                format!("\"{}\"", field.replace('"', "\"\""))
-            } else {
-                field.clone()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(",")
+fn read_existing(path: &Path) -> Result<Option<String>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(body) => Ok(Some(body)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
 }
 
-fn parse_csv_line(line: &str) -> Option<Vec<String>> {
-    let mut fields = Vec::new();
-    let mut field = String::new();
-    let mut quoted = false;
-    let mut chars = line.chars().peekable();
-    while let Some(ch) = chars.next() {
-        match (ch, quoted) {
-            ('"', true) if chars.peek() == Some(&'"') => {
-                field.push('"');
-                chars.next();
+/// Skips `*.csv.template`, which is not data.
+fn csv_files(repo: &Path, dir: &str) -> Result<Vec<String>, String> {
+    let mut pending = vec![dir.to_string()];
+    let mut files = Vec::new();
+    while let Some(relative) = pending.pop() {
+        let entries =
+            std::fs::read_dir(repo.join(&relative)).map_err(|e| format!("{relative}: {e}"))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("{relative}: {e}"))?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|name| format!("{relative}: non-UTF-8 file name {name:?}"))?;
+            let child = format!("{relative}/{name}");
+            if entry
+                .file_type()
+                .map_err(|e| format!("{child}: {e}"))?
+                .is_dir()
+            {
+                pending.push(child);
+            } else if name.ends_with(".csv") {
+                files.push(child);
             }
-            ('"', _) => quoted = !quoted,
-            (',', false) => {
-                fields.push(std::mem::take(&mut field));
-            }
-            _ => field.push(ch),
         }
     }
-    (!quoted).then_some(())?;
-    fields.push(field);
-    Some(fields)
+    files.sort();
+    Ok(files)
 }
 
 /// Split an scp-style remote (`git@host:path`) into its ssh destination and
@@ -201,53 +160,26 @@ pub fn explain_ssh_failure(stderr: &str) -> String {
 pub fn check_push_access() -> Result<(), String> {
     let (host, path) = split_remote(INTRANET_REMOTE)
         .ok_or_else(|| format!("unsupported remote: {INTRANET_REMOTE}"))?;
-    let mut child = Command::new("ssh")
+    let output = Command::new("ssh")
         .args([
             "-o",
             "BatchMode=yes",
             "-o",
             "ConnectTimeout=10",
-            "-o",
-            "ConnectionAttempts=1",
             host,
             &format!("git-receive-pack '{path}'"),
         ])
         .stdin(std::process::Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .output()
         .map_err(|e| format!("ssh: {e}"))?;
-
-    let mut stdout = child.stdout.take().ok_or("ssh: stdout was not captured")?;
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut byte = [0; 1];
-        let result = stdout.read(&mut byte);
-        let _ = sender.send(result);
-    });
-
-    let first_byte = receiver.recv_timeout(Duration::from_secs(12));
-    let access_granted = matches!(first_byte, Ok(Ok(count)) if count > 0);
-    let timed_out = matches!(first_byte, Err(mpsc::RecvTimeoutError::Timeout));
-    let _ = child.kill();
-    let _ = child.wait();
-
-    if access_granted {
+    // The advertisement (refs + capabilities) only appears on success; exit
+    // codes are unreliable here because we hang up mid-protocol.
+    if !output.stdout.is_empty() {
         return Ok(());
     }
-    if timed_out {
-        return Err("SSH access check timed out after 12 seconds. Check network access and SSH configuration.".to_string());
-    }
-    let stderr = child
-        .stderr
-        .take()
-        .map(|mut stream| {
-            let mut output = Vec::new();
-            let _ = stream.read_to_end(&mut output);
-            output
-        })
-        .unwrap_or_default();
-    Err(explain_ssh_failure(&String::from_utf8_lossy(&stderr)))
+    Err(explain_ssh_failure(&String::from_utf8_lossy(
+        &output.stderr,
+    )))
 }
 
 /// Run one git command in `dir`, surfacing stderr on failure. Never prompts:
@@ -268,29 +200,23 @@ pub fn git(dir: &Path, args: &[&str]) -> Result<(), String> {
 
 /// The full publish: fresh shallow clone under `export_root`, CSVs written,
 /// branch committed and pushed. Returns (files written, branch, MR URL).
-pub fn publish_with_directory_changes(
+pub fn publish(
     export_root: &Path,
     rfc3339: &str,
     rows: Vec<AppointmentRow>,
-    directory_changes: Vec<DirectoryChangeRow>,
+    edits: &DirectoryEdits,
 ) -> Result<(Vec<String>, String, String), String> {
     let branch = branch_name(rfc3339);
     let checkout = clone_fresh(export_root, &branch)?;
-    let mut files = if rows.is_empty() {
-        Vec::new()
-    } else {
-        write_rows(&checkout, rows)?
-    };
-    files.extend(write_directory_changes(&checkout, directory_changes)?);
+    let mut files = write_rows(&checkout, rows)?;
+    files.extend(write_edits(&checkout, edits)?);
+    files.sort();
+    files.dedup();
     git(&checkout, &["checkout", "-b", &branch])?;
-    git(&checkout, &["add", "data/cca-appointment"])?;
+    git(&checkout, &["add", APPOINTMENT_DIR])?;
     git(
         &checkout,
-        &[
-            "commit",
-            "-m",
-            "feat(cca-appointment): cupid export",
-        ],
+        &["commit", "-m", "feat(cca-appointment): cupid export"],
     )?;
     git(&checkout, &["push", "origin", &branch])?;
     Ok((files, branch.clone(), pr_url(&branch)))
@@ -323,6 +249,16 @@ mod tests {
             position_name: position.into(),
             user_email: email.into(),
         }
+    }
+
+    fn write(repo: &Path, relative: &str, body: &str) {
+        let path = repo.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+
+    fn read(repo: &Path, relative: &str) -> String {
+        std::fs::read_to_string(repo.join(relative)).unwrap()
     }
 
     fn temp_repo(name: &str) -> PathBuf {
@@ -449,6 +385,98 @@ mod tests {
             "user_email,cca_name,position_name,commitment_period\n\
              new@x,Alpha,Chair,full-year\n\
              old@x,Alpha,Chair,full-year\n"
+        );
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn write_edits_changes_rows_in_the_files_that_list_them() {
+        let repo = temp_repo("edits-in-place");
+        let header = "user_email,cca_name,position_name,commitment_period\n";
+        write(
+            &repo,
+            "data/cca-appointment/sports/all.csv",
+            &format!(
+                "{header}ann@x,Badminton F,Captain,full-year\nben@x,Netball,Captain,full-year\n"
+            ),
+        );
+        write(
+            &repo,
+            "data/cca-appointment/committees/blockcomm/block_a.csv",
+            &format!("{header}cat@x,Block A,Head,full-year\n"),
+        );
+        write(
+            &repo,
+            "data/cca-appointment/sports/all.csv.template",
+            &format!("{header}ann@x,Badminton F,Captain,full-year\n"),
+        );
+        let edits = DirectoryEdits::from([
+            (row("Badminton F", "Captain", "ann@x"), None),
+            (
+                row("Block A", "Head", "cat@x"),
+                Some(cupid::directory::CommitmentPeriod::Semester1),
+            ),
+        ]);
+
+        let files = write_edits(&repo, &edits).unwrap();
+
+        assert_eq!(
+            files,
+            vec![
+                "data/cca-appointment/committees/blockcomm/block_a.csv",
+                "data/cca-appointment/sports/all.csv",
+            ],
+            "no new allocation file: every edited row already had a home"
+        );
+        assert_eq!(
+            read(&repo, "data/cca-appointment/sports/all.csv"),
+            format!("{header}ben@x,Netball,Captain,full-year\n")
+        );
+        assert_eq!(
+            read(
+                &repo,
+                "data/cca-appointment/committees/blockcomm/block_a.csv"
+            ),
+            format!("{header}cat@x,Block A,Head,semester-1\n")
+        );
+        assert_eq!(
+            read(&repo, "data/cca-appointment/sports/all.csv.template"),
+            format!("{header}ann@x,Badminton F,Captain,full-year\n"),
+            "templates are not data"
+        );
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn write_edits_adds_rows_no_file_lists_to_the_allocation_dir() {
+        let repo = temp_repo("edits-added");
+        let header = "user_email,cca_name,position_name,commitment_period\n";
+        write(
+            &repo,
+            "data/cca-appointment/sports/all.csv",
+            &format!("{header}ann@x,Badminton F,Captain,full-year\n"),
+        );
+        let edits = DirectoryEdits::from([
+            (
+                row("Badminton F", "Vice Captain", "ben@x"),
+                Some(cupid::directory::CommitmentPeriod::Semester2),
+            ),
+            (row("Badminton F", "Captain", "gone@x"), None),
+        ]);
+
+        let files = write_edits(&repo, &edits).unwrap();
+
+        assert_eq!(
+            files,
+            vec!["data/cca-appointment/allocation/badminton_f.csv"]
+        );
+        assert_eq!(
+            read(&repo, "data/cca-appointment/allocation/badminton_f.csv"),
+            format!("{header}ben@x,Badminton F,Vice Captain,semester-2\n")
+        );
+        assert_eq!(
+            read(&repo, "data/cca-appointment/sports/all.csv"),
+            format!("{header}ann@x,Badminton F,Captain,full-year\n")
         );
         std::fs::remove_dir_all(&repo).unwrap();
     }
