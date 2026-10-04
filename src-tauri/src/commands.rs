@@ -344,6 +344,7 @@ fn retained_preallocations(
 /// under `data/cca-appointment/allocation/`. Positions listed in `excluded`
 /// are held back: their seats stay out of the export, and `purge` must be
 /// given the same list so their preferences survive into the next cycle.
+/// Pending directory edits are exported too and ignore `excluded`.
 /// Nothing is written to the database; the receipt carries the merge-request
 /// URL the operator must open to land the change. The run is kept:
 /// appointments show up on the next sync after the MR merges.
@@ -354,25 +355,26 @@ pub async fn commit(
 ) -> Result<ExportReceipt, String> {
     let guard = state.inputs.lock().await;
     let inputs = guard.as_ref().ok_or("Sync first: no corpus loaded.")?;
-    let result = inputs
+    let excluded = excluded_set(&inputs.pool, &excluded)?;
+    let rows = inputs
         .last_result
         .as_ref()
-        .ok_or("Run matching first: nothing to export.")?;
-    let excluded = excluded_set(&inputs.pool, &excluded)?;
-    let rows = cupid::export::rows_from(result, &inputs.pool, &excluded);
-    if rows.is_empty() {
+        .map(|result| cupid::export::rows_from(result, &inputs.pool, &excluded))
+        .unwrap_or_default();
+    let edits = cupid::export::directory_edits(&inputs.changes.changes, &inputs.directory);
+    if rows.is_empty() && edits.is_empty() {
         return Err(if excluded.is_empty() {
-            "Nothing to export: the run adds no new appointments.".to_string()
+            "Nothing to export: no new allocations or directory changes.".to_string()
         } else {
             "Nothing to export: every new appointment is on an excluded position.".to_string()
         });
     }
 
-    let row_count = rows.len();
+    let row_count = rows.len() + edits.len();
     let export_root = state.export_root();
     let timestamp = now_rfc3339();
     let (files, branch, pr_url) =
-        block_in_place(|| export::publish(&export_root, &timestamp, rows))?;
+        block_in_place(|| export::publish(&export_root, &timestamp, rows, &edits))?;
     Ok(ExportReceipt {
         rows: row_count,
         files,
@@ -512,8 +514,8 @@ mod tests {
                 id: 16,
                 cca_id: 1,
                 reporting_position_id: None,
-                position_type: PositionKind::Member,
-                name: "Member".into(),
+                position_type: PositionKind::Vice,
+                name: "Vice".into(),
                 description: None,
                 capacity: None,
             }],

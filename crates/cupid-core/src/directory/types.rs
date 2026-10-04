@@ -58,6 +58,7 @@ impl PositionKind {
     }
 
     /// Explicit policy, independent of database enum order or allocation eligibility.
+    /// Member and resident are excluded: intranet does not reconcile them from CSV.
     pub fn can_manage_appointments(self) -> bool {
         matches!(
             self,
@@ -67,7 +68,6 @@ impl PositionKind {
                 | Self::MainComm
                 | Self::SubComm
                 | Self::TeamManager
-                | Self::Member
         )
     }
 }

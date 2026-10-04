@@ -83,4 +83,9 @@ describe("pending directory changes", () => {
     expect(html).not.toContain("Position 16");
     expect(html).not.toContain("User 1");
   });
+
+  it("counts every directory change toward the export", () => {
+    const html = render();
+    expect(html).toMatch(/>\+3<\/[^>]+>(<[^>]+>)*to publish/);
+  });
 });
