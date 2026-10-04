@@ -87,19 +87,36 @@ fn snapshot_preserves_all_roles_empty_ccas_and_appointment_metadata() {
 }
 
 #[test]
-fn edits_protect_resident_even_when_removing_a_missing_pair() {
-    let mut directory = fixture(vec![holding(1, 16, CommitmentPeriod::FullYear)]);
-    directory.add_appointment(2, 16, CommitmentPeriod::FullYear).unwrap();
-    directory.remove_appointment(1, 16).unwrap();
-    directory.update_appointment_period(2, 16, CommitmentPeriod::Semester2).unwrap();
-    for operation in [
-        directory.add_appointment(2, 17, CommitmentPeriod::FullYear),
-        directory.remove_appointment(1, 17).map(|_| ()),
-        directory.update_appointment_period(1, 17, CommitmentPeriod::Semester2),
-    ] {
-        assert!(matches!(operation, Err(DirectoryError::ReadOnlyPosition(_))));
+fn edits_protect_member_and_resident_even_when_removing_a_missing_pair() {
+    let mut directory = fixture(vec![
+        holding(1, 11, CommitmentPeriod::FullYear),
+        holding(1, 16, CommitmentPeriod::FullYear),
+    ]);
+    directory
+        .add_appointment(2, 11, CommitmentPeriod::FullYear)
+        .unwrap();
+    directory.remove_appointment(1, 11).unwrap();
+    directory
+        .update_appointment_period(2, 11, CommitmentPeriod::Semester2)
+        .unwrap();
+    for position_id in [16, 17] {
+        for operation in [
+            directory.add_appointment(2, position_id, CommitmentPeriod::FullYear),
+            directory.remove_appointment(1, position_id).map(|_| ()),
+            directory.update_appointment_period(1, position_id, CommitmentPeriod::Semester2),
+        ] {
+            assert!(matches!(
+                operation,
+                Err(DirectoryError::ReadOnlyPosition(_))
+            ));
+        }
     }
-    assert_eq!(directory.appointments().count(), 1);
+    assert_eq!(
+        directory.appointment(1, 16).map(|a| a.commitment_period),
+        Some(CommitmentPeriod::FullYear),
+        "a loaded member holding stays as the database has it"
+    );
+    assert_eq!(directory.appointments().count(), 2);
 }
 
 #[test]
@@ -387,15 +404,15 @@ fn change_set_json_is_camel_case_for_every_variant() {
 /// the database, and `add_appointment` alone would reset all three.
 #[test]
 fn restoring_a_removed_holding_keeps_the_database_metadata() {
-    let original = holding(1, 16, CommitmentPeriod::FullYear);
+    let original = holding(1, 11, CommitmentPeriod::FullYear);
     let mut directory = fixture(vec![original.clone()]);
-    directory.remove_appointment(1, 16).unwrap();
+    directory.remove_appointment(1, 11).unwrap();
 
     let mut reinstated = original.clone();
     reinstated.commitment_period = CommitmentPeriod::Semester2;
     directory.restore_appointment(reinstated).unwrap();
 
-    let restored = directory.appointment(1, 16).unwrap();
+    let restored = directory.appointment(1, 11).unwrap();
     assert_eq!(restored.points, 42);
     assert_eq!(restored.team_status, TeamStatus::Varsity);
     assert_eq!(restored.created_at, original.created_at);
