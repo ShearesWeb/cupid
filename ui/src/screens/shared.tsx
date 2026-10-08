@@ -86,14 +86,11 @@ export function ChipRow<T extends string | number>({
   );
 }
 
-export function PageTitle({ title, sub }: { title: string; sub: string }) {
+export function PageTitle({ title }: { title: string }) {
   return (
-    <>
-      <h1 style={{ margin: "0 0 4px", fontSize: 22, fontWeight: 700, letterSpacing: "-0.4px", color: "var(--token-color-foreground-strong)" }}>
-        {title}
-      </h1>
-      <p style={{ margin: "0 0 18px", fontSize: 13, color: "var(--token-color-foreground-faint)", maxWidth: 620 }}>{sub}</p>
-    </>
+    <h1 style={{ margin: "0 0 18px", fontSize: 22, fontWeight: 700, letterSpacing: "-0.4px", color: "var(--token-color-foreground-strong)" }}>
+      {title}
+    </h1>
   );
 }
 
