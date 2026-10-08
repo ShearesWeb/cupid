@@ -5,6 +5,10 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::io::Read;
+use std::process::Stdio;
+use std::sync::mpsc;
+use std::time::Duration;
 
 use cupid::export::{
     AppointmentRow, DirectoryEdits, by_file, merge, merge_lines, rewrite, unplaced,
@@ -160,26 +164,53 @@ pub fn explain_ssh_failure(stderr: &str) -> String {
 pub fn check_push_access() -> Result<(), String> {
     let (host, path) = split_remote(INTRANET_REMOTE)
         .ok_or_else(|| format!("unsupported remote: {INTRANET_REMOTE}"))?;
-    let output = Command::new("ssh")
+    let mut child = Command::new("ssh")
         .args([
             "-o",
             "BatchMode=yes",
             "-o",
             "ConnectTimeout=10",
+            "-o",
+            "ConnectionAttempts=1",
             host,
             &format!("git-receive-pack '{path}'"),
         ])
         .stdin(std::process::Stdio::null())
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("ssh: {e}"))?;
-    // The advertisement (refs + capabilities) only appears on success; exit
-    // codes are unreliable here because we hang up mid-protocol.
-    if !output.stdout.is_empty() {
+
+    let mut stdout = child.stdout.take().ok_or("ssh: stdout was not captured")?;
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut byte = [0; 1];
+        let result = stdout.read(&mut byte);
+        let _ = sender.send(result);
+    });
+
+    let first_byte = receiver.recv_timeout(Duration::from_secs(12));
+    let access_granted = matches!(first_byte, Ok(Ok(count)) if count > 0);
+    let timed_out = matches!(first_byte, Err(mpsc::RecvTimeoutError::Timeout));
+    let _ = child.kill();
+    let _ = child.wait();
+
+    if access_granted {
         return Ok(());
     }
-    Err(explain_ssh_failure(&String::from_utf8_lossy(
-        &output.stderr,
-    )))
+    if timed_out {
+        return Err("SSH access check timed out after 12 seconds. Check network access and SSH configuration.".to_string());
+    }
+    let stderr = child
+        .stderr
+        .take()
+        .map(|mut stream| {
+            let mut output = Vec::new();
+            let _ = stream.read_to_end(&mut output);
+            output
+        })
+        .unwrap_or_default();
+    Err(explain_ssh_failure(&String::from_utf8_lossy(&stderr)))
 }
 
 /// Run one git command in `dir`, surfacing stderr on failure. Never prompts:

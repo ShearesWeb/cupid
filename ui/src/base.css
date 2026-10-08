@@ -1,4 +1,28 @@
+/* Cupid brand layer over the Helios tokens: the pink accent and a warm tint
+   on the faint page/surface/border tokens. Dark mode restates every token it
+   needs, since a later :root rule would otherwise win over colors.css's
+   equally specific [data-theme="dark"] block. */
+:root {
+  --cupid: #DB2A63;
+  --cupid-strong: #B91C53;
+  --cupid-soft: rgba(219,42,99,0.10);
+  --cupid-line: rgba(219,42,99,0.32);
+  --cupid-wash: #FDF6F8;
+  --token-color-page-faint: #FDF6F8;
+  --token-color-surface-faint: #FEFAFB;
+  --token-color-border-faint: rgba(120,60,80,0.10);
+}
+[data-theme="dark"] {
+  --cupid-wash: #161214;
+  --token-color-page-faint: #161214;
+  --token-color-surface-faint: #101113;
+  --token-color-border-faint: rgba(255,200,215,0.10);
+}
 * { box-sizing: border-box; }
+::selection { background: var(--cupid-soft); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--cupid); outline-offset: 2px; }
+a { color: var(--cupid-strong); }
+a:hover { color: var(--cupid); }
 html, body { margin: 0; padding: 0; height: 100%; }
 /* page-faint is translucent in dark mode (#06060708), so it must composite
    over the solid page-primary base, never over the UA's white default. */

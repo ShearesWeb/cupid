@@ -1,12 +1,13 @@
 // App.tsx — app shell: TopBar, Sidebar, routing state, toasts (task-12).
 // Ports reference/cca-console-design.html lines 182-268 (app frame, sidebar, topbar)
 // and replaces the mock splash loader with a real "sync to load" empty state.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./lib/api.ts";
-import type { DirectorySnapshot, PositionType, Snapshot } from "./lib/types.ts";
+import type { CommitmentPeriod, DirectorySnapshot, Snapshot } from "./lib/types.ts";
 import { buildIndexes, type Indexes } from "./lib/indexes.ts";
+import { buildDirectoryIndex, kindLabel } from "./lib/directory.ts";
 import { errorMessage, fmtTime } from "./lib/format.ts";
-import { Icon, Card, Button } from "./components/index.ts";
+import { Icon, Button } from "./components/index.ts";
 import { Toasts, type ToastItem, type ToastKind } from "./components/Toasts.tsx";
 import { UpdatePrompt } from "./components/UpdatePrompt.tsx";
 import {
@@ -18,6 +19,7 @@ import {
   type PendingUpdate,
 } from "./lib/updater.ts";
 import { Allocations as AllocationsScreen } from "./screens/Allocations.tsx";
+import { initialAllocState, type AllocState } from "./lib/allocState.ts";
 import { DetailPage as DetailPageScreen } from "./screens/DetailPage.tsx";
 import { EventSidebar as EventSidebarScreen } from "./screens/EventSidebar.tsx";
 import { Preallocations as PreallocationsScreen } from "./screens/Preallocations.tsx";
@@ -26,8 +28,6 @@ import { Ccas as CcasScreen } from "./screens/Ccas.tsx";
 import { TextInput } from "./components/TextInput.tsx";
 
 type Screen = "alloc" | "ccas" | "prealloc" | "review";
-type View = "position" | "applicant";
-type TypeFilter = "all" | PositionType;
 type Detail = { type: "applicant" | "position"; id: number } | null;
 type Match = { aid: number; pid: number } | null;
 type Theme = "light" | "dark";
@@ -50,10 +50,8 @@ export interface UiState {
   directory: DirectorySnapshot | null;
   idx: Indexes | null;
   screen: Screen;
-  view: View;
-  search: string;
-  typeFilter: TypeFilter;
-  page: number;
+  alloc: AllocState;
+  ccaOpen: number | null;
   detail: Detail;
   match: Match;
   syncing: boolean;
@@ -69,18 +67,16 @@ export interface UiHandlers {
   openDetail: (type: "applicant" | "position", id: number) => void;
   openMatch: (aid: number, pid: number) => void;
   setScreen: (s: Screen) => void;
-  setView: (v: View) => void;
-  setSearch: (v: string) => void;
-  setTypeFilter: (v: TypeFilter) => void;
-  setPage: (p: number) => void;
+  patchAlloc: (patch: Partial<AllocState>) => void;
+  setCcaOpen: (id: number | null) => void;
   toast: (kind: ToastKind, text: string) => void;
   setCommitState: (s: CommitState | ((prev: CommitState) => CommitState)) => void;
   setPurgeText: (v: string) => void;
   addPreallocation: (applicantId: number, positionId: number, note: string | null) => Promise<boolean>;
   removePreallocation: (applicantId: number, positionId: number) => Promise<boolean>;
-  addAppointment: (userId: number, positionId: number, period: string) => Promise<boolean>;
+  addAppointment: (userId: number, positionId: number, period: CommitmentPeriod) => Promise<boolean>;
   removeAppointment: (userId: number, positionId: number) => Promise<boolean>;
-  updateAppointmentPeriod: (userId: number, positionId: number, period: string) => Promise<boolean>;
+  updateAppointmentPeriod: (userId: number, positionId: number, period: CommitmentPeriod) => Promise<boolean>;
   applySnapshot: (snap: Snapshot) => void;
 }
 
@@ -91,10 +87,8 @@ function App() {
   const [directory, setDirectory] = useState<DirectorySnapshot | null>(null);
   const [theme, setTheme] = useState<Theme>("light");
   const [screen, setScreenState] = useState<Screen>("alloc");
-  const [view, setViewState] = useState<View>("position");
-  const [search, setSearchState] = useState("");
-  const [typeFilter, setTypeFilterState] = useState<TypeFilter>("all");
-  const [page, setPage] = useState(0);
+  const [alloc, setAlloc] = useState<AllocState>(initialAllocState);
+  const [ccaOpen, setCcaOpen] = useState<number | null>(null);
   const [detail, setDetail] = useState<Detail>(null);
   const [match, setMatch] = useState<Match>(null);
   const [syncing, setSyncing] = useState(false);
@@ -220,38 +214,23 @@ function App() {
     }
   };
 
-  const addAppointment = async (userId: number, positionId: number, period: string) => {
+  // Appointment edits return the refreshed directory; the CCA screen words
+  // its own success toasts, so only failures are reported here.
+  const editDirectory = async (edit: () => Promise<DirectorySnapshot>) => {
     try {
-      setDirectory(await api.addAppointment(userId, positionId, period));
-      toast("success", "Appointment added to the pending changes.");
+      setDirectory(await edit());
       return true;
     } catch (e) {
       toast("error", errorMessage(e));
       return false;
     }
   };
-
-  const removeAppointment = async (userId: number, positionId: number) => {
-    try {
-      setDirectory(await api.removeAppointment(userId, positionId));
-      toast("success", "Appointment removed from the pending changes.");
-      return true;
-    } catch (e) {
-      toast("error", errorMessage(e));
-      return false;
-    }
-  };
-
-  const updateAppointmentPeriod = async (userId: number, positionId: number, period: string) => {
-    try {
-      setDirectory(await api.updateAppointmentPeriod(userId, positionId, period));
-      toast("success", "Commitment period updated in the pending changes.");
-      return true;
-    } catch (e) {
-      toast("error", errorMessage(e));
-      return false;
-    }
-  };
+  const addAppointment = (userId: number, positionId: number, period: CommitmentPeriod) =>
+    editDirectory(() => api.addAppointment(userId, positionId, period));
+  const removeAppointment = (userId: number, positionId: number) =>
+    editDirectory(() => api.removeAppointment(userId, positionId));
+  const updateAppointmentPeriod = (userId: number, positionId: number, period: CommitmentPeriod) =>
+    editDirectory(() => api.updateAppointmentPeriod(userId, positionId, period));
 
   // Verify credentials, adopt the new target, and pull its corpus. The old
   // snapshot dies with the old database; a connect failure leaves everything
@@ -330,23 +309,24 @@ function App() {
   const openMatch = (aid: number, pid: number) => setMatch({ aid, pid });
   const setScreen = (s: Screen) => {
     setScreenState(s);
+    setCcaOpen(null);
     setDetail(null);
     setMatch(null);
   };
-  const setView = (v: View) => {
-    setViewState(v);
-    setPage(0);
-    setSearchState("");
-    setDetail(null);
-    setMatch(null);
+  const patchAlloc = (patch: Partial<AllocState>) => {
+    setAlloc((prev) => ({ ...prev, ...patch }));
+    if (patch.view) setMatch(null);
   };
-  const setSearch = (v: string) => {
-    setSearchState(v);
-    setPage(0);
+  // Global search: a CCA opens its directory page; a person opens their
+  // applicant detail over the applicant view, filtered to them.
+  const jumpToCca = (id: number) => {
+    setScreen("ccas");
+    setCcaOpen(id);
   };
-  const setTypeFilter = (v: TypeFilter) => {
-    setTypeFilterState(v);
-    setPage(0);
+  const jumpToApplicant = (id: number, name: string) => {
+    setScreen("alloc");
+    setAlloc((prev) => ({ ...prev, view: "applicant", search: name, appFilter: "all", page: 0 }));
+    setDetail({ type: "applicant", id });
   };
 
   const ui: UiState = {
@@ -354,10 +334,8 @@ function App() {
     directory,
     idx,
     screen,
-    view,
-    search,
-    typeFilter,
-    page,
+    alloc,
+    ccaOpen,
     detail,
     match,
     syncing,
@@ -373,10 +351,8 @@ function App() {
     openDetail,
     openMatch,
     setScreen,
-    setView,
-    setSearch,
-    setTypeFilter,
-    setPage,
+    patchAlloc,
+    setCcaOpen,
     toast,
     setCommitState,
     setPurgeText,
@@ -429,6 +405,9 @@ function App() {
     >
       <TopBar
         snapshot={snapshot}
+        directory={directory}
+        onJumpToCca={jumpToCca}
+        onJumpToApplicant={jumpToApplicant}
         syncing={syncing}
         running={running}
         theme={theme}
@@ -440,6 +419,8 @@ function App() {
         <Sidebar
           screen={screen}
           setScreen={setScreen}
+          ccaCount={directory?.ccas.length ?? null}
+          preallocationCount={snapshot.preallocations.length}
           hasRun={snapshot.run !== null}
           connInfo={connInfo}
           onChangeDb={() => {
@@ -709,6 +690,9 @@ function Splash({
 // ---- Top bar ------------------------------------------------------------
 function TopBar({
   snapshot,
+  directory,
+  onJumpToCca,
+  onJumpToApplicant,
   syncing,
   running,
   theme,
@@ -717,6 +701,9 @@ function TopBar({
   doRun,
 }: {
   snapshot: Snapshot;
+  directory: DirectorySnapshot | null;
+  onJumpToCca: (id: number) => void;
+  onJumpToApplicant: (id: number, name: string) => void;
   syncing: boolean;
   running: boolean;
   theme: Theme;
@@ -757,7 +744,9 @@ function TopBar({
           Cupid
         </div>
       </div>
-      <div style={{ flex: 1 }} />
+      <div style={{ flex: 1, display: "flex", justifyContent: "center" }}>
+        <GlobalSearch snapshot={snapshot} directory={directory} onJumpToCca={onJumpToCca} onJumpToApplicant={onJumpToApplicant} />
+      </div>
       <div
         style={{
           display: "flex",
@@ -785,6 +774,169 @@ function TopBar({
         </Button>
       </div>
     </header>
+  );
+}
+
+type SearchResult = { kind: "cca" | "person"; id: number; label: string; sub: string };
+
+// Jump-to box (design globalSearch): up to five CCAs from the directory and
+// five applicants from the allocation corpus. "/" or Ctrl/Cmd+K focuses it.
+function GlobalSearch({
+  snapshot,
+  directory,
+  onJumpToCca,
+  onJumpToApplicant,
+}: {
+  snapshot: Snapshot;
+  directory: DirectorySnapshot | null;
+  onJumpToCca: (id: number) => void;
+  onJumpToApplicant: (id: number, name: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const input = useRef<HTMLInputElement>(null);
+  const dx = useMemo(() => (directory ? buildDirectoryIndex(directory) : null), [directory]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      const typing = tag === "INPUT" || tag === "TEXTAREA";
+      if ((e.key === "/" && !typing) || ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k")) {
+        e.preventDefault();
+        input.current?.focus();
+        input.current?.select();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
+  const q = query.trim().toLowerCase();
+  const ccaResults: SearchResult[] =
+    q && directory && dx
+      ? directory.ccas
+          .filter((c) => c.name.toLowerCase().includes(q))
+          .slice(0, 5)
+          .map((c) => {
+            const n = dx.memberCount(c.id);
+            return { kind: "cca", id: c.id, label: c.name, sub: `${kindLabel(c.kind)} · ${n} member${n === 1 ? "" : "s"}` };
+          })
+      : [];
+  const personResults: SearchResult[] = q
+    ? snapshot.applicants
+        .filter((a) => a.name.toLowerCase().includes(q) || a.email.toLowerCase().includes(q))
+        .slice(0, 5)
+        .map((a) => ({ kind: "person", id: a.id, label: a.name, sub: a.email }))
+    : [];
+  const results = [...ccaResults, ...personResults];
+
+  const go = (r: SearchResult) => {
+    setQuery("");
+    setOpen(false);
+    input.current?.blur();
+    if (r.kind === "cca") onJumpToCca(r.id);
+    else onJumpToApplicant(r.id, r.label);
+  };
+
+  return (
+    <div style={{ position: "relative", width: "100%", maxWidth: 380 }}>
+      <span style={{ position: "absolute", left: 11, top: 10, display: "flex", pointerEvents: "none" }}>
+        <Icon name="search" size={14} color="var(--token-color-foreground-faint)" />
+      </span>
+      <input
+        ref={input}
+        value={query}
+        placeholder="Jump to a CCA or person…  ( / )"
+        aria-label="Search CCAs and people"
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && results[0]) go(results[0]);
+          else if (e.key === "Escape") {
+            setQuery("");
+            setOpen(false);
+          }
+        }}
+        style={{
+          width: "100%",
+          height: 34,
+          padding: "0 12px 0 33px",
+          borderRadius: 20,
+          border: "1px solid var(--token-color-border-primary)",
+          background: "var(--token-color-page-faint)",
+          color: "var(--token-color-foreground-primary)",
+          font: "inherit",
+          fontSize: 13,
+          outline: "none",
+        }}
+      />
+      {open && q ? (
+        <div
+          style={{
+            position: "absolute",
+            top: 40,
+            left: 0,
+            right: 0,
+            zIndex: 60,
+            borderRadius: 10,
+            overflow: "hidden",
+            background: "var(--token-color-surface-primary)",
+            boxShadow: "var(--token-elevation-high-box-shadow)",
+          }}
+        >
+          {results.length ? (
+            results.map((r) => (
+              <button
+                key={r.kind + r.id}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  go(r);
+                }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 9,
+                  width: "100%",
+                  padding: "8px 12px",
+                  border: "none",
+                  background: "transparent",
+                  cursor: "pointer",
+                  font: "inherit",
+                  textAlign: "left",
+                }}
+              >
+                <Icon name={r.kind === "person" ? "user" : "grid"} size={14} color="var(--cupid)" />
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span
+                    style={{
+                      display: "block",
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: "var(--token-color-foreground-strong)",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {r.label}
+                  </span>
+                  <span style={{ display: "block", fontSize: 11, color: "var(--token-color-foreground-faint)" }}>{r.sub}</span>
+                </span>
+                <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.5px", textTransform: "uppercase", color: "var(--cupid-strong)" }}>
+                  {r.kind === "person" ? "Person" : "CCA"}
+                </span>
+              </button>
+            ))
+          ) : (
+            <div style={{ padding: 12, fontSize: 12.5, color: "var(--token-color-foreground-faint)" }}>No matching CCAs or people</div>
+          )}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -864,9 +1016,13 @@ function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) =
 }
 
 // ---- Sidebar --------------------------------------------------------------
+type NavItem = { id: Screen; label: string; icon: string; count?: number | null; dot?: string | null };
+
 function Sidebar({
   screen,
   setScreen,
+  ccaCount,
+  preallocationCount,
   hasRun,
   connInfo,
   onChangeDb,
@@ -876,6 +1032,8 @@ function Sidebar({
 }: {
   screen: Screen;
   setScreen: (s: Screen) => void;
+  ccaCount: number | null;
+  preallocationCount: number;
   hasRun: boolean;
   connInfo: string | null;
   onChangeDb: () => void;
@@ -883,167 +1041,146 @@ function Sidebar({
   checkingUpdate: boolean;
   onCheckUpdate: () => void;
 }) {
-  const items: { id: Screen; label: string; icon: string }[] = [
-    { id: "alloc", label: "Allocations", icon: "layers" },
-    { id: "ccas", label: "CCAs", icon: "folder" },
-    { id: "prealloc", label: "Preallocations", icon: "tag" },
-    { id: "review", label: "Review & commit", icon: "lock" },
+  const runColor = hasRun ? "var(--token-color-foreground-success)" : "var(--token-color-foreground-faint)";
+  const groups: { label: string; items: NavItem[] }[] = [
+    { label: "Home", items: [{ id: "ccas", label: "CCAs", icon: "grid", count: ccaCount }] },
+    {
+      label: "Allocation",
+      items: [
+        { id: "prealloc", label: "Preallocations", icon: "tag", count: preallocationCount },
+        { id: "alloc", label: "Allocations", icon: "layers" },
+      ],
+    },
+    { label: "Commit", items: [{ id: "review", label: "Review & commit", icon: "lock", dot: hasRun ? runColor : null }] },
   ];
+  const linkStyle = { border: "none", background: "transparent", font: "inherit", fontWeight: 600, padding: 0, textAlign: "left" } as const;
   return (
     <nav
       style={{
-        width: 210,
-        flex: "0 0 210px",
+        width: 220,
+        flex: "0 0 220px",
         display: "flex",
         flexDirection: "column",
         background: "var(--token-color-surface-primary)",
         borderRight: "1px solid var(--token-color-border-faint)",
-        padding: "14px 10px",
         overflow: "auto",
       }}
     >
-      <div
-        style={{
-          fontSize: 10,
-          fontWeight: 700,
-          letterSpacing: "0.8px",
-          textTransform: "uppercase",
-          color: "var(--token-color-foreground-faint)",
-          padding: "4px 10px 10px",
-        }}
-      >
-        Workspace
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-        {items.map((it) => {
-          const active = screen === it.id;
-          return (
-            <button
-              key={it.id}
-              onClick={() => setScreen(it.id)}
+      <div style={{ display: "flex", flexDirection: "column", gap: 18, padding: "16px 10px" }}>
+        {groups.map((g) => (
+          <div key={g.label} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <div
               style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                height: 38,
-                padding: "0 11px",
-                borderRadius: 8,
-                font: "inherit",
-                fontSize: 13,
-                fontWeight: active ? 700 : 500,
-                cursor: "pointer",
-                textAlign: "left",
-                background: active ? "var(--token-color-surface-strong)" : "transparent",
-                color: active ? "var(--token-color-foreground-strong)" : "var(--token-color-foreground-primary)",
-                border: "none",
-                borderLeft: `3px solid ${active ? "#DB2A63" : "transparent"}`,
+                fontSize: 10.5,
+                fontWeight: 700,
+                letterSpacing: "0.6px",
+                textTransform: "uppercase",
+                color: "var(--token-color-foreground-faint)",
+                padding: "0 10px 6px",
               }}
             >
-              <Icon name={it.icon} size={16} color={active ? "#DB2A63" : "var(--token-color-foreground-faint)"} />
-              {it.label}
-            </button>
-          );
-        })}
+              {g.label}
+            </div>
+            {g.items.map((it) => {
+              const active = screen === it.id;
+              return (
+                <button
+                  key={it.id}
+                  onClick={() => setScreen(it.id)}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    height: 36,
+                    padding: "0 10px",
+                    borderRadius: 7,
+                    font: "inherit",
+                    fontSize: 13,
+                    fontWeight: active ? 700 : 500,
+                    cursor: "pointer",
+                    textAlign: "left",
+                    background: active ? "var(--cupid-soft)" : "transparent",
+                    color: active ? "var(--cupid-strong)" : "var(--token-color-foreground-primary)",
+                    border: "none",
+                  }}
+                >
+                  <Icon name={it.icon} size={16} color={active ? "var(--cupid-strong)" : "var(--token-color-foreground-faint)"} />
+                  <span style={{ flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{it.label}</span>
+                  {it.count != null ? (
+                    <span
+                      style={{
+                        minWidth: 20,
+                        height: 18,
+                        padding: "0 6px",
+                        borderRadius: 999,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontSize: 11,
+                        fontWeight: 700,
+                        background: active ? "var(--token-color-surface-primary)" : "var(--token-color-surface-strong)",
+                        color: active ? "var(--cupid-strong)" : "var(--token-color-foreground-faint)",
+                      }}
+                    >
+                      {it.count}
+                    </span>
+                  ) : null}
+                  {it.dot ? <span title="Run ready to review" style={{ width: 7, height: 7, borderRadius: "50%", background: it.dot }} /> : null}
+                </button>
+              );
+            })}
+          </div>
+        ))}
       </div>
       <div style={{ flex: 1 }} />
-      <Card padding="small" style={{ padding: 12 }}>
-        <div
-          style={{
-            fontSize: 10,
-            fontWeight: 700,
-            letterSpacing: "0.6px",
-            textTransform: "uppercase",
-            color: "var(--token-color-foreground-faint)",
-            marginBottom: 8,
-          }}
-        >
-          Session
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 7, fontSize: 12 }}>
-          <SLine
-            k="Run"
-            v={hasRun ? "Fresh" : "None"}
-            c={hasRun ? "var(--token-color-foreground-success)" : "var(--token-color-foreground-faint)"}
-          />
-          <div
-            title={connInfo ?? undefined}
-            style={{
-              color: "var(--token-color-foreground-faint)",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {connInfo ?? "Not connected"}
-          </div>
-          <button
-            onClick={onChangeDb}
-            style={{
-              border: "none",
-              background: "transparent",
-              cursor: "pointer",
-              font: "inherit",
-              fontSize: 11.5,
-              fontWeight: 600,
-              color: "#DB2A63",
-              padding: 0,
-              textAlign: "left",
-            }}
-          >
-            Switch database…
-          </button>
-        </div>
-      </Card>
       <div
         style={{
           display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 8,
-          padding: "10px 4px 2px",
-          fontSize: 11,
-          color: "var(--token-color-foreground-faint)",
+          flexDirection: "column",
+          gap: 6,
+          padding: "12px 20px 14px",
+          borderTop: "1px solid var(--token-color-border-faint)",
+          fontSize: 12,
         }}
       >
-        <span>v{version ?? "—"}</span>
-        <button
-          onClick={onCheckUpdate}
-          disabled={checkingUpdate}
+        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+          <span style={{ width: 7, height: 7, borderRadius: "50%", background: runColor }} />
+          <span style={{ fontWeight: 600, color: "var(--token-color-foreground-strong)" }}>{hasRun ? "Matching run ready" : "No matching run"}</span>
+        </div>
+        <div title={connInfo ?? undefined} style={{ display: "flex", alignItems: "center", gap: 7, color: "var(--token-color-foreground-faint)" }}>
+          <Icon name="server" size={13} color="var(--token-color-foreground-faint)" />
+          <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{connInfo ?? "Not connected"}</span>
+        </div>
+        <button onClick={onChangeDb} style={{ ...linkStyle, cursor: "pointer", fontSize: 11.5, color: "var(--cupid)" }}>
+          Switch database…
+        </button>
+        <div
           style={{
-            border: "none",
-            background: "transparent",
-            cursor: checkingUpdate ? "default" : "pointer",
-            font: "inherit",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+            paddingTop: 4,
             fontSize: 11,
-            fontWeight: 600,
-            color: checkingUpdate ? "var(--token-color-foreground-faint)" : "#DB2A63",
-            padding: 0,
+            color: "var(--token-color-foreground-faint)",
           }}
         >
-          {checkingUpdate ? "Checking…" : "Check for updates"}
-        </button>
+          <span>v{version ?? "—"}</span>
+          <button
+            onClick={onCheckUpdate}
+            disabled={checkingUpdate}
+            style={{
+              ...linkStyle,
+              cursor: checkingUpdate ? "default" : "pointer",
+              fontSize: 11,
+              color: checkingUpdate ? "var(--token-color-foreground-faint)" : "var(--cupid)",
+            }}
+          >
+            {checkingUpdate ? "Checking…" : "Check for updates"}
+          </button>
+        </div>
       </div>
     </nav>
-  );
-}
-
-function SLine({ k, v, c }: { k: string; v: string; c: string }) {
-  return (
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-      <span style={{ color: "var(--token-color-foreground-faint)" }}>{k}</span>
-      <span
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 5,
-          fontWeight: 700,
-          color: "var(--token-color-foreground-strong)",
-        }}
-      >
-        <span style={{ width: 7, height: 7, borderRadius: "50%", background: c }} />
-        {v}
-      </span>
-    </div>
   );
 }
 
@@ -1068,26 +1205,28 @@ function Allocations({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
     <AllocationsScreen
       snapshot={ui.snapshot}
       idx={ui.idx}
-      view={ui.view}
-      search={ui.search}
-      typeFilter={ui.typeFilter}
-      page={ui.page}
-      onSetView={handlers.setView}
-      onSetSearch={handlers.setSearch}
-      onSetTypeFilter={handlers.setTypeFilter}
-      onSetPage={handlers.setPage}
+      state={ui.alloc}
+      onPatch={handlers.patchAlloc}
       onOpenDetail={handlers.openDetail}
       onOpenMatch={handlers.openMatch}
       hasRun={ui.snapshot.run !== null}
-      running={ui.running}
-      onRun={handlers.doRun}
     />
   );
 }
 
 function Ccas({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
   if (!ui.directory) return null;
-  return <CcasScreen directory={ui.directory} onAdd={handlers.addAppointment} onRemove={handlers.removeAppointment} onUpdatePeriod={handlers.updateAppointmentPeriod} />;
+  return (
+    <CcasScreen
+      directory={ui.directory}
+      openCcaId={ui.ccaOpen}
+      onOpenCca={handlers.setCcaOpen}
+      onAdd={handlers.addAppointment}
+      onRemove={handlers.removeAppointment}
+      onUpdatePeriod={handlers.updateAppointmentPeriod}
+      toast={handlers.toast}
+    />
+  );
 }
 
 function Review({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
