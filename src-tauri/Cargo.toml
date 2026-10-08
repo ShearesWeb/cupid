@@ -1,6 +1,6 @@
 [package]
 name = "cupid-desktop"
-version = "0.3.4"
+version = "1.0.0"
 edition = "2024"
 
 [build-dependencies]
