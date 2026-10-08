@@ -2,7 +2,7 @@
 //! and directory edits, branch, push, and hand back the merge-request URL. The
 //! CSV content itself comes from `cupid::export`; this module owns the filesystem and git side.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::io::Read;
@@ -10,18 +10,13 @@ use std::process::Stdio;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use cupid::export::{
-    AppointmentRow, DirectoryEdits, by_file, merge, merge_lines, rewrite, unplaced,
-};
+use cupid::export::{AppointmentRow, DirectoryEdits, additions, homes, insert, rewrite, slug};
 
 pub const INTRANET_REMOTE: &str = "git@github.com:ShearesWeb/intranet.git";
 pub const INTRANET_WEB: &str = "https://github.com/ShearesWeb/intranet";
 
 /// Intranet reconciles every CSV here as one set.
 pub const APPOINTMENT_DIR: &str = "data/cca-appointment";
-
-/// Where cupid adds new rows. Edits to existing rows land in whichever file holds them.
-pub const ALLOCATION_DIR: &str = "data/cca-appointment/allocation";
 
 /// Branch for one export, derived from an RFC 3339 timestamp:
 /// `cupid/allocation-YYYYMMDD-HHMMSS`.
@@ -43,63 +38,70 @@ pub fn pr_url(branch: &str) -> String {
     format!("{INTRANET_WEB}/compare/main...{branch}?quick_pull=1")
 }
 
-/// Merge `rows` into the per-CCA CSV files under `repo`'s allocation
-/// directory. Returns the repo-relative paths written, sorted.
-pub fn write_rows(repo: &Path, rows: Vec<AppointmentRow>) -> Result<Vec<String>, String> {
-    let dir = repo.join(ALLOCATION_DIR);
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let mut written = Vec::new();
-    for (file, rows) in by_file(rows) {
-        let path = dir.join(&file);
-        let existing = read_existing(&path)?;
-        std::fs::write(&path, merge(existing.as_deref(), &rows))
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        written.push(format!("{ALLOCATION_DIR}/{file}"));
+/// Edits rows where they stand and adds new ones to the file already listing
+/// their CCA, else beside the template that names it, else a new
+/// `<slug>.csv`. Returns the repo-relative paths written, sorted.
+pub fn write_appointments(
+    repo: &Path,
+    rows: Vec<AppointmentRow>,
+    edits: &DirectoryEdits,
+) -> Result<Vec<String>, String> {
+    let mut bodies = BTreeMap::new();
+    for relative in files_ending(repo, APPOINTMENT_DIR, ".csv")? {
+        let body = read(repo, &relative)?;
+        bodies.insert(relative, body);
     }
-    Ok(written)
-}
+    let mut templates = Vec::new();
+    for relative in files_ending(repo, APPOINTMENT_DIR, ".csv.template")? {
+        let body = read(repo, &relative)?;
+        let data = relative.trim_end_matches(".template").to_string();
+        templates.push((data, body));
+    }
 
-/// Returns the repo-relative paths written, sorted.
-pub fn write_edits(repo: &Path, edits: &DirectoryEdits) -> Result<Vec<String>, String> {
+    let mut written = BTreeSet::new();
     let mut found = BTreeSet::new();
-    let mut written = Vec::new();
-    for relative in csv_files(repo, APPOINTMENT_DIR)? {
-        let path = repo.join(&relative);
-        let body =
-            std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let (rewritten, held) = rewrite(&body, edits);
-        if held.is_empty() {
-            continue;
+    for (relative, body) in &mut bodies {
+        let (rewritten, held) = rewrite(body, edits);
+        if !held.is_empty() {
+            *body = rewritten;
+            written.insert(relative.clone());
+            found.extend(held);
         }
-        std::fs::write(&path, rewritten).map_err(|e| format!("{}: {e}", path.display()))?;
-        written.push(relative);
-        found.extend(held);
     }
 
-    let dir = repo.join(ALLOCATION_DIR);
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    for (file, lines) in unplaced(edits, &found) {
-        let path = dir.join(&file);
-        let existing = read_existing(&path)?;
-        std::fs::write(&path, merge_lines(existing.as_deref(), lines))
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        written.push(format!("{ALLOCATION_DIR}/{file}"));
+    let homes = homes(
+        bodies
+            .iter()
+            .chain(templates.iter().map(|(path, body)| (path, body)))
+            .map(|(path, body)| (path.as_str(), body.as_str())),
+    );
+    for (cca, rows) in additions(rows, edits, &found) {
+        let relative = homes
+            .get(&cca)
+            .cloned()
+            .unwrap_or_else(|| format!("{APPOINTMENT_DIR}/{}.csv", slug(&cca)));
+        let body = bodies.entry(relative.clone()).or_default();
+        let updated = insert(body, &rows);
+        if updated != *body {
+            *body = updated;
+            written.insert(relative);
+        }
     }
-    written.sort();
-    written.dedup();
-    Ok(written)
+
+    for relative in &written {
+        let path = repo.join(relative);
+        std::fs::write(&path, &bodies[relative]).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(written.into_iter().collect())
 }
 
-fn read_existing(path: &Path) -> Result<Option<String>, String> {
-    match std::fs::read_to_string(path) {
-        Ok(body) => Ok(Some(body)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("{}: {e}", path.display())),
-    }
+fn read(repo: &Path, relative: &str) -> Result<String, String> {
+    let path = repo.join(relative);
+    std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Skips `*.csv.template`, which is not data.
-fn csv_files(repo: &Path, dir: &str) -> Result<Vec<String>, String> {
+/// `.csv` does not match `*.csv.template`, which is not data.
+fn files_ending(repo: &Path, dir: &str, suffix: &str) -> Result<Vec<String>, String> {
     let mut pending = vec![dir.to_string()];
     let mut files = Vec::new();
     while let Some(relative) = pending.pop() {
@@ -118,7 +120,7 @@ fn csv_files(repo: &Path, dir: &str) -> Result<Vec<String>, String> {
                 .is_dir()
             {
                 pending.push(child);
-            } else if name.ends_with(".csv") {
+            } else if name.ends_with(suffix) {
                 files.push(child);
             }
         }
@@ -239,10 +241,7 @@ pub fn publish(
 ) -> Result<(Vec<String>, String, String), String> {
     let branch = branch_name(rfc3339);
     let checkout = clone_fresh(export_root, &branch)?;
-    let mut files = write_rows(&checkout, rows)?;
-    files.extend(write_edits(&checkout, edits)?);
-    files.sort();
-    files.dedup();
+    let files = write_appointments(&checkout, rows, edits)?;
     git(&checkout, &["checkout", "-b", &branch])?;
     git(&checkout, &["add", APPOINTMENT_DIR])?;
     git(
@@ -367,79 +366,112 @@ mod tests {
         );
     }
 
-    #[test]
-    fn write_rows_creates_per_cca_files_under_the_allocation_dir() {
-        let repo = temp_repo("creates");
-        let files = write_rows(
-            &repo,
-            vec![
-                row("Alpha Beta", "Chair", "a@x"),
-                row("Zeta", "Chair", "z@x"),
-            ],
-        )
-        .unwrap();
-        assert_eq!(
-            files,
-            vec![
-                "data/cca-appointment/allocation/alpha_beta.csv",
-                "data/cca-appointment/allocation/zeta.csv",
-            ]
-        );
-        let body =
-            std::fs::read_to_string(repo.join("data/cca-appointment/allocation/alpha_beta.csv"))
-                .unwrap();
-        assert_eq!(
-            body,
-            "user_email,cca_name,position_name,commitment_period\n\
-             a@x,Alpha Beta,Chair,full-year\n"
-        );
-        std::fs::remove_dir_all(&repo).unwrap();
-    }
+    const HEADER: &str = "user_email,cca_name,position_name,commitment_period\n";
 
     #[test]
-    fn write_rows_merges_into_existing_files_without_dropping_rows() {
-        let repo = temp_repo("merges");
-        let dir = repo.join(ALLOCATION_DIR);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("alpha.csv"),
-            "user_email,cca_name,position_name,commitment_period\n\
-             old@x,Alpha,Chair,full-year\n",
-        )
-        .unwrap();
-
-        write_rows(&repo, vec![row("Alpha", "Chair", "new@x")]).unwrap();
-
-        let body = std::fs::read_to_string(dir.join("alpha.csv")).unwrap();
-        assert_eq!(
-            body,
-            "user_email,cca_name,position_name,commitment_period\n\
-             new@x,Alpha,Chair,full-year\n\
-             old@x,Alpha,Chair,full-year\n"
-        );
-        std::fs::remove_dir_all(&repo).unwrap();
-    }
-
-    #[test]
-    fn write_edits_changes_rows_in_the_files_that_list_them() {
-        let repo = temp_repo("edits-in-place");
-        let header = "user_email,cca_name,position_name,commitment_period\n";
+    fn write_appointments_adds_rows_to_the_file_listing_their_cca() {
+        let repo = temp_repo("adds-in-place");
         write(
             &repo,
             "data/cca-appointment/sports/all.csv",
             &format!(
-                "{header}ann@x,Badminton F,Captain,full-year\nben@x,Netball,Captain,full-year\n"
+                "{HEADER}ann@x,Badminton F,Captain,full-year\nben@x,Netball,Captain,full-year\n"
+            ),
+        );
+        write(
+            &repo,
+            "data/cca-appointment/committees/shweb.csv",
+            &format!("{HEADER}cat@x,Sheares Web,Chairperson,full-year\n"),
+        );
+
+        let files = write_appointments(
+            &repo,
+            vec![
+                row("Badminton F", "Member", "new@x"),
+                row("Sheares Web", "Chairperson", "cat@x"),
+            ],
+            &DirectoryEdits::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            files,
+            vec!["data/cca-appointment/sports/all.csv"],
+            "a row the file already lists changes nothing"
+        );
+        assert_eq!(
+            read(&repo, "data/cca-appointment/sports/all.csv"),
+            format!(
+                "{HEADER}ann@x,Badminton F,Captain,full-year\n\
+                 new@x,Badminton F,Member,full-year\n\
+                 ben@x,Netball,Captain,full-year\n"
+            )
+        );
+        assert!(!repo.join("data/cca-appointment/allocation").exists());
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn write_appointments_falls_back_to_the_template_then_a_new_file() {
+        let repo = temp_repo("adds-fallback");
+        write(
+            &repo,
+            "data/cca-appointment/committees/rag.csv.template",
+            &format!("{HEADER}x@x,Receive And Give (RAG),Chairperson,full-year\n"),
+        );
+
+        let files = write_appointments(
+            &repo,
+            vec![
+                row("Receive And Give (RAG)", "Member", "a@x"),
+                row("New Club", "Chair", "b@x"),
+            ],
+            &DirectoryEdits::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            files,
+            vec![
+                "data/cca-appointment/committees/rag.csv",
+                "data/cca-appointment/new_club.csv",
+            ]
+        );
+        assert_eq!(
+            read(&repo, "data/cca-appointment/committees/rag.csv"),
+            format!("{HEADER}a@x,Receive And Give (RAG),Member,full-year\n")
+        );
+        assert_eq!(
+            read(&repo, "data/cca-appointment/committees/rag.csv.template"),
+            format!("{HEADER}x@x,Receive And Give (RAG),Chairperson,full-year\n"),
+            "templates are not data"
+        );
+        assert_eq!(
+            read(&repo, "data/cca-appointment/new_club.csv"),
+            format!("{HEADER}b@x,New Club,Chair,full-year\n")
+        );
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn write_appointments_edits_rows_in_the_files_that_list_them() {
+        let repo = temp_repo("edits-in-place");
+        write(
+            &repo,
+            "data/cca-appointment/sports/all.csv",
+            &format!(
+                "{HEADER}ann@x,Badminton F,Captain,full-year\nben@x,Netball,Captain,full-year\n"
             ),
         );
         write(
             &repo,
             "data/cca-appointment/committees/blockcomm/block_a.csv",
-            &format!("{header}cat@x,Block A,Head,full-year\n"),
+            &format!("{HEADER}cat@x,Block A,Head,full-year\n"),
         );
         write(
             &repo,
             "data/cca-appointment/sports/all.csv.template",
-            &format!("{header}ann@x,Badminton F,Captain,full-year\n"),
+            &format!("{HEADER}ann@x,Badminton F,Captain,full-year\n"),
         );
         let edits = DirectoryEdits::from([
             (row("Badminton F", "Captain", "ann@x"), None),
@@ -447,67 +479,39 @@ mod tests {
                 row("Block A", "Head", "cat@x"),
                 Some(cupid::directory::CommitmentPeriod::Semester1),
             ),
+            (
+                row("Netball", "Vice Captain", "dan@x"),
+                Some(cupid::directory::CommitmentPeriod::Semester2),
+            ),
+            (row("Netball", "Captain", "gone@x"), None),
         ]);
 
-        let files = write_edits(&repo, &edits).unwrap();
+        let files = write_appointments(&repo, vec![], &edits).unwrap();
 
         assert_eq!(
             files,
             vec![
                 "data/cca-appointment/committees/blockcomm/block_a.csv",
                 "data/cca-appointment/sports/all.csv",
-            ],
-            "no new allocation file: every edited row already had a home"
+            ]
         );
         assert_eq!(
             read(&repo, "data/cca-appointment/sports/all.csv"),
-            format!("{header}ben@x,Netball,Captain,full-year\n")
+            format!(
+                "{HEADER}ben@x,Netball,Captain,full-year\ndan@x,Netball,Vice Captain,semester-2\n"
+            )
         );
         assert_eq!(
             read(
                 &repo,
                 "data/cca-appointment/committees/blockcomm/block_a.csv"
             ),
-            format!("{header}cat@x,Block A,Head,semester-1\n")
+            format!("{HEADER}cat@x,Block A,Head,semester-1\n")
         );
         assert_eq!(
             read(&repo, "data/cca-appointment/sports/all.csv.template"),
-            format!("{header}ann@x,Badminton F,Captain,full-year\n"),
+            format!("{HEADER}ann@x,Badminton F,Captain,full-year\n"),
             "templates are not data"
-        );
-        std::fs::remove_dir_all(&repo).unwrap();
-    }
-
-    #[test]
-    fn write_edits_adds_rows_no_file_lists_to_the_allocation_dir() {
-        let repo = temp_repo("edits-added");
-        let header = "user_email,cca_name,position_name,commitment_period\n";
-        write(
-            &repo,
-            "data/cca-appointment/sports/all.csv",
-            &format!("{header}ann@x,Badminton F,Captain,full-year\n"),
-        );
-        let edits = DirectoryEdits::from([
-            (
-                row("Badminton F", "Vice Captain", "ben@x"),
-                Some(cupid::directory::CommitmentPeriod::Semester2),
-            ),
-            (row("Badminton F", "Captain", "gone@x"), None),
-        ]);
-
-        let files = write_edits(&repo, &edits).unwrap();
-
-        assert_eq!(
-            files,
-            vec!["data/cca-appointment/allocation/badminton_f.csv"]
-        );
-        assert_eq!(
-            read(&repo, "data/cca-appointment/allocation/badminton_f.csv"),
-            format!("{header}ben@x,Badminton F,Vice Captain,semester-2\n")
-        );
-        assert_eq!(
-            read(&repo, "data/cca-appointment/sports/all.csv"),
-            format!("{header}ann@x,Badminton F,Captain,full-year\n")
         );
         std::fs::remove_dir_all(&repo).unwrap();
     }

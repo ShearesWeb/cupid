@@ -350,8 +350,8 @@ fn retained_preallocations(
 
 /// Export the run's new allocations as CSVs and push them to the intranet
 /// repo: every settled allocation — preallocated seats included — that is not
-/// already an existing appointment becomes a row in cupid's per-CCA files
-/// under `data/cca-appointment/allocation/`. Positions listed in `excluded`
+/// already an existing appointment becomes a row in the CSV that already
+/// lists its CCA. Positions listed in `excluded`
 /// are held back: their seats stay out of the export, and `purge` must be
 /// given the same list so their preferences survive into the next cycle.
 /// Pending directory edits are exported too and ignore `excluded`.
