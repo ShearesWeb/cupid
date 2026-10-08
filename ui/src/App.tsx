@@ -70,6 +70,7 @@ export interface UiHandlers {
   setScreen: (s: Screen) => void;
   patchAlloc: (patch: Partial<AllocState>) => void;
   setCcaOpen: (id: number | null) => void;
+  jumpToCca: (id: number) => void;
   toast: (kind: ToastKind, text: string) => void;
   setCommitState: (s: CommitState | ((prev: CommitState) => CommitState)) => void;
   setPurgeText: (v: string) => void;
@@ -87,7 +88,7 @@ function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [directory, setDirectory] = useState<DirectorySnapshot | null>(null);
   const [theme, setTheme] = useState<Theme>("light");
-  const [screen, setScreenState] = useState<Screen>("alloc");
+  const [screen, setScreenState] = useState<Screen>("ccas");
   const [alloc, setAlloc] = useState<AllocState>(initialAllocState);
   const [ccaOpen, setCcaOpen] = useState<number | null>(null);
   const [detail, setDetail] = useState<Detail>(null);
@@ -368,6 +369,7 @@ function App() {
     setScreen,
     patchAlloc,
     setCcaOpen,
+    jumpToCca,
     toast,
     setCommitState,
     setPurgeText,
@@ -1297,11 +1299,13 @@ function DetailPage({ ui, handlers, onBack }: { ui: UiState; handlers: UiHandler
     <DetailPageScreen
       detail={ui.detail}
       snapshot={ui.snapshot}
+      directory={ui.directory}
       idx={ui.idx}
       screen={ui.screen}
       onBack={onBack}
       onOpenMatch={handlers.openMatch}
       onOpenDetail={handlers.openDetail}
+      onOpenCca={handlers.jumpToCca}
     />
   );
 }
