@@ -58,6 +58,7 @@ impl PositionKind {
     }
 
     /// Explicit policy, independent of database enum order or allocation eligibility.
+    /// Member and resident are excluded: intranet does not reconcile them from CSV.
     pub fn can_manage_appointments(self) -> bool {
         matches!(
             self,
@@ -67,7 +68,6 @@ impl PositionKind {
                 | Self::MainComm
                 | Self::SubComm
                 | Self::TeamManager
-                | Self::Member
         )
     }
 }
@@ -153,9 +153,14 @@ pub struct CcaAppointmentView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-// `rename_all` only renames the variant tags; the struct-variant fields need
-// `rename_all_fields` to reach the UI as camelCase too.
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+// `rename_all` renames the variants only; struct-variant fields need
+// `rename_all_fields`, without which `Remove` and `ChangePeriod` would reach
+// the UI as snake_case while every other type in the API is camelCase.
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum CcaAppointmentChange {
     Add {
         appointment: CcaAppointment,

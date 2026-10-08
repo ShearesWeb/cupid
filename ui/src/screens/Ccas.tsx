@@ -22,7 +22,7 @@ import {
 } from "../lib/directory.ts";
 import type {
   CommitmentPeriod,
-  DirectoryAppointment,
+  DirectoryAppointmentView,
   DirectoryCca,
   DirectoryPosition,
   DirectoryPositionType,
@@ -373,14 +373,14 @@ function PositionCard({
   onEdit,
 }: {
   position: DirectoryPosition;
-  holders: DirectoryAppointment[];
-  rows: DirectoryAppointment[];
+  holders: DirectoryAppointmentView[];
+  rows: DirectoryAppointmentView[];
   removedRows: RemovedHolder[];
   open: boolean;
   dx: DirectoryIndex;
   onToggle: () => void;
   onAdd: () => void;
-  onEdit: (a: DirectoryAppointment) => void;
+  onEdit: (a: DirectoryAppointmentView) => void;
 }) {
   const n = holders.length;
   const expandable = n + removedRows.length > 0;
@@ -564,7 +564,7 @@ function ChangeTag({ kind }: { kind: keyof typeof CHANGE_TONES }) {
   );
 }
 
-function MemberRow({ appointment, dx, onEdit }: { appointment: DirectoryAppointment; dx: DirectoryIndex; onEdit?: () => void }) {
+function MemberRow({ appointment, dx, onEdit }: { appointment: DirectoryAppointmentView; dx: DirectoryIndex; onEdit?: () => void }) {
   const user = dx.userById.get(appointment.userId);
   const name = user?.name ?? `User ${appointment.userId}`;
   const fullYear = appointment.commitmentPeriod === "full-year";

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildDirectoryIndex, capacityText, isFull } from "./directory";
-import type { DirectoryAppointment, DirectoryPosition, DirectorySnapshot } from "./types";
+import type { DirectoryAppointmentView, DirectoryPosition, DirectorySnapshot } from "./types";
 
 const position = (id: number, positionType: DirectoryPosition["positionType"], capacity: number | null): DirectoryPosition => ({
   id,
@@ -12,7 +12,7 @@ const position = (id: number, positionType: DirectoryPosition["positionType"], c
   capacity,
 });
 
-const holder = (userId: number, positionId: number, status: DirectoryAppointment["status"] = "existing"): DirectoryAppointment => ({
+const holder = (userId: number, positionId: number, status: DirectoryAppointmentView["status"] = "existing"): DirectoryAppointmentView => ({
   userId,
   positionId,
   commitmentPeriod: "full-year",

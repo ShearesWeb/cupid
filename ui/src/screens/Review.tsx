@@ -76,11 +76,7 @@ export function Review(props: ReviewProps) {
 
   const groups = groupAdds(adds, snapshot);
   const directoryGroups = commitState.exported ? [] : groupDirectoryChanges(directory.changes, directory);
-  const directoryChangeCount = commitState.exported ? 0 : directory.changes.filter((change) => {
-    const positionId = "appointment" in change ? change.appointment.positionId : change.positionId;
-    return !excluded.has(positionId);
-  }).length;
-  const addCount = commitState.exported ? commitState.exportedRows : allocationCount + directoryChangeCount;
+  const addCount = commitState.exported ? commitState.exportedRows : allocationCount + directory.changes.length;
   const heldBackCount = adds.length - allocationCount;
 
   // The export and the purge must agree on what was held back, so the
@@ -113,14 +109,7 @@ export function Review(props: ReviewProps) {
       {directoryGroups.length ? (
         <Section title="Pending directory changes">
           {directoryGroups.map((group) => (
-            <DirectoryDiffGroup
-              key={group.positionId}
-              group={group}
-              directory={directory}
-              excluded={excluded}
-              locked={commitState.exported}
-              onToggle={togglePositions}
-            />
+            <DirectoryChangeCard key={group.positionId} group={group} directory={directory} />
           ))}
         </Section>
       ) : null}
@@ -178,45 +167,47 @@ function periodLabel(period: string): string {
   return period.replace("semester-", "Semester ").replace("full-year", "Full year").replace("ex-shearite", "Ex-Shearite");
 }
 
-interface DirectoryDiffGroup {
+// Narrow on `kind`; probing for `positionId` once blanked the app.
+function changedPair(change: DirectoryAppointmentChange): { userId: number; positionId: number } {
+  return change.kind === "add" ? change.appointment : change;
+}
+
+interface DirectoryChangeGroup {
   ccaName: string;
   positionId: number;
   positionName: string;
   changes: DirectoryAppointmentChange[];
 }
 
-function groupDirectoryChanges(changes: DirectoryAppointmentChange[], directory: DirectorySnapshot): DirectoryDiffGroup[] {
-  const groups = new Map<number, DirectoryDiffGroup>();
+function groupDirectoryChanges(changes: DirectoryAppointmentChange[], directory: DirectorySnapshot): DirectoryChangeGroup[] {
+  const groups = new Map<number, DirectoryChangeGroup>();
   for (const change of changes) {
-    const positionId = "appointment" in change ? change.appointment.positionId : change.positionId;
-    const position = directory.positions.find((item) => item.id === positionId);
-    if (!position) continue;
+    const { positionId } = changedPair(change);
     const group = groups.get(positionId);
-    if (group) group.changes.push(change);
-    else {
-      const cca = directory.ccas.find((item) => item.id === position.ccaId);
-      groups.set(positionId, { ccaName: cca?.name ?? `CCA ${position.ccaId}`, positionId, positionName: position.name, changes: [change] });
+    if (group) {
+      group.changes.push(change);
+      continue;
     }
+    const position = directory.positions.find((item) => item.id === positionId);
+    const cca = position && directory.ccas.find((item) => item.id === position.ccaId);
+    groups.set(positionId, { ccaName: cca?.name ?? "Unknown CCA", positionId, positionName: position?.name ?? `Position ${positionId}`, changes: [change] });
   }
   return [...groups.values()];
 }
 
-function DirectoryDiffGroup({ group, directory, excluded, locked, onToggle }: { group: DirectoryDiffGroup; directory: DirectorySnapshot; excluded: Set<number>; locked: boolean; onToggle: (ids: number[], include: boolean) => void }) {
-  const held = excluded.has(group.positionId);
+function DirectoryChangeCard({ group, directory }: { group: DirectoryChangeGroup; directory: DirectorySnapshot }) {
   return (
     <Card padding="none" style={{ overflow: "hidden", marginBottom: 10 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "9px 14px", background: "var(--token-color-surface-faint)", borderBottom: "1px solid var(--token-color-border-faint)", fontFamily: "var(--token-typography-font-stack-code)", fontSize: 12.5 }}>
-        <Checkbox state={held ? "off" : "on"} disabled={locked} label={`Include ${group.positionName} directory changes`} onClick={() => onToggle([group.positionId], held)} />
         <Icon name="folder" size={14} color="var(--token-color-foreground-faint)" />
         <span style={{ fontWeight: 700, color: "var(--token-color-foreground-strong)" }}>{group.ccaName}</span>
-        <span style={{ color: held ? "var(--token-color-foreground-faint)" : "var(--token-color-foreground-warning)", fontWeight: 700 }}>{group.positionName}</span>
-        {held ? <span style={{ color: "var(--token-color-foreground-warning-on-surface)" }}>held back</span> : null}
+        <span style={{ color: "var(--token-color-foreground-warning)", fontWeight: 700 }}>{group.positionName}</span>
       </div>
       {group.changes.map((change, index) => {
-        const userId = "appointment" in change ? change.appointment.userId : change.userId;
+        const { userId } = changedPair(change);
         const user = directory.users.find((item) => item.id === userId);
         const detail = change.kind === "changePeriod" ? `${periodLabel(change.from)} -> ${periodLabel(change.to)}` : change.kind === "add" ? "Added" : "Removed";
-        return <div key={`${change.kind}-${userId}-${index}`} style={{ display: "flex", gap: 10, padding: "7px 14px 7px 42px", borderBottom: "1px solid var(--token-color-border-faint)", fontSize: 12.5, opacity: held ? 0.55 : 1 }}><strong>{user?.name ?? `User ${userId}`}</strong><span style={{ color: "var(--token-color-foreground-faint)" }}>{detail}</span></div>;
+        return <div key={`${change.kind}-${userId}-${index}`} style={{ display: "flex", gap: 10, padding: "7px 14px 7px 37px", borderBottom: "1px solid var(--token-color-border-faint)", fontSize: 12.5 }}><strong>{user?.name ?? `User ${userId}`}</strong><span style={{ color: "var(--token-color-foreground-faint)" }}>{detail}</span></div>;
       })}
     </Card>
   );

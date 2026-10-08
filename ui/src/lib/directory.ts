@@ -4,7 +4,7 @@
 import type {
   CcaKind,
   CommitmentPeriod,
-  DirectoryAppointment,
+  DirectoryAppointmentView,
   DirectoryPosition,
   DirectoryPositionType,
   DirectorySnapshot,
@@ -56,8 +56,8 @@ export const typeLabel = (type: DirectoryPositionType) => POSITION_TYPES.find(([
 export const typeRank = (type: DirectoryPositionType) => POSITION_TYPES.findIndex(([t]) => t === type);
 export const periodLabel = (period: CommitmentPeriod) => PERIODS.find(([p]) => p === period)?.[1] ?? period;
 
-/** Residents are read-only: Rust rejects the edit, so the UI never offers one. */
-export const isEditable = (position: DirectoryPosition) => position.positionType !== "resident";
+/** Mirrors `can_manage_appointments`: Rust rejects edits to members and residents, so the UI never offers one. */
+export const isEditable = (position: DirectoryPosition) => position.positionType !== "member" && position.positionType !== "resident";
 
 /** `null` capacity is unlimited; `0` is closed. */
 export const isFull = (position: DirectoryPosition, held: number) => position.capacity !== null && held >= position.capacity;
@@ -74,7 +74,7 @@ export interface DirectoryIndex {
   positionById: Map<number, DirectoryPosition>;
   /** Per CCA, sorted by type significance then id. */
   positionsByCca: Map<number, DirectoryPosition[]>;
-  holdersByPosition: Map<number, DirectoryAppointment[]>;
+  holdersByPosition: Map<number, DirectoryAppointmentView[]>;
   removedByPosition: Map<number, RemovedHolder[]>;
   /** Distinct people holding any position in the CCA. */
   memberCount: (ccaId: number) => number;
@@ -94,7 +94,7 @@ export function buildDirectoryIndex(directory: DirectorySnapshot): DirectoryInde
   for (const list of positionsByCca.values()) {
     list.sort((a, b) => typeRank(a.positionType) - typeRank(b.positionType) || a.id - b.id);
   }
-  const holdersByPosition = new Map<number, DirectoryAppointment[]>();
+  const holdersByPosition = new Map<number, DirectoryAppointmentView[]>();
   for (const a of directory.appointments) push(holdersByPosition, a.positionId, a);
   const removedByPosition = new Map<number, RemovedHolder[]>();
   for (const c of directory.changes) {

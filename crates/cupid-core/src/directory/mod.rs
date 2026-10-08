@@ -248,12 +248,37 @@ impl Directory {
         Ok(())
     }
 
+    /// A brand-new holding: points, team status and creation time are the
+    /// database's to supply, so they start empty.
     pub fn add_appointment(
         &mut self,
         user_id: i32,
         position_id: i32,
         commitment_period: CommitmentPeriod,
     ) -> Result<(), DirectoryError> {
+        self.insert_appointment(CcaAppointment {
+            user_id,
+            position_id,
+            commitment_period,
+            points: 0,
+            team_status: TeamStatus::None,
+            created_at: None,
+        })
+    }
+
+    /// Reinstates a holding the database still has, carrying its own points,
+    /// team status and creation time back in. Removing a holder and putting
+    /// them back undoes the edit; routing that through `add_appointment`
+    /// would silently reset all three to a new holding's blanks.
+    pub fn restore_appointment(
+        &mut self,
+        appointment: CcaAppointment,
+    ) -> Result<(), DirectoryError> {
+        self.insert_appointment(appointment)
+    }
+
+    fn insert_appointment(&mut self, appointment: CcaAppointment) -> Result<(), DirectoryError> {
+        let (user_id, position_id) = (appointment.user_id, appointment.position_id);
         self.editable_position(user_id, position_id)?;
         if self.appointment(user_id, position_id).is_some() {
             return Err(DirectoryError::DuplicateAppointment {
@@ -261,14 +286,6 @@ impl Directory {
                 position_id,
             });
         }
-        let appointment = CcaAppointment {
-            user_id,
-            position_id,
-            commitment_period,
-            points: 0,
-            team_status: TeamStatus::None,
-            created_at: None,
-        };
         self.validate_holding(&appointment)?;
         self.appointments
             .insert((user_id, position_id), appointment);

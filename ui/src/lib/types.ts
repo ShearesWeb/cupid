@@ -49,6 +49,11 @@ export interface DirectoryAppointment {
   points: number;
   teamStatus: "none" | "shortlisted" | "reserve" | "main-team" | "varsity";
   createdAt: string | null;
+}
+
+// Only the snapshot's holdings carry a status; a change's own appointment is
+// the bare record, so the two must not share one type.
+export interface DirectoryAppointmentView extends DirectoryAppointment {
   status: "existing" | "added" | "modified";
 }
 
@@ -61,7 +66,7 @@ export interface DirectorySnapshot {
   users: DirectoryUser[];
   ccas: DirectoryCca[];
   positions: DirectoryPosition[];
-  appointments: DirectoryAppointment[];
+  appointments: DirectoryAppointmentView[];
   changes: DirectoryAppointmentChange[];
 }
 
