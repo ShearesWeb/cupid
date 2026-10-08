@@ -121,22 +121,79 @@ pub fn rewrite(body: &str, edits: &DirectoryEdits) -> (String, BTreeSet<Appointm
     (out, found)
 }
 
-/// Edits no file held, as new lines keyed by `<slug>.csv`. Unlisted removals
-/// need nothing: intranet deletes what no CSV lists.
-pub fn unplaced(
+/// Rows to add, grouped by CCA and keyed by row so each lands once: the run's
+/// rows at full year, then edits no file held, whose period wins. Unlisted
+/// removals need nothing: intranet deletes what no CSV lists.
+pub fn additions(
+    rows: Vec<AppointmentRow>,
     edits: &DirectoryEdits,
     found: &BTreeSet<AppointmentRow>,
-) -> BTreeMap<String, Vec<String>> {
-    let mut files: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for (row, period) in edits {
-        if let (Some(period), false) = (period, found.contains(row)) {
-            files
-                .entry(format!("{}.csv", slug(&row.cca_name)))
-                .or_default()
-                .push(line_with_period(row, period.as_str()));
+) -> BTreeMap<String, BTreeMap<AppointmentRow, String>> {
+    let mut ccas: BTreeMap<String, BTreeMap<AppointmentRow, String>> = BTreeMap::new();
+    let rows = rows.into_iter().map(|row| {
+        let line = csv_line(&row);
+        (row, line)
+    });
+    let edited = edits
+        .iter()
+        .filter(|(row, _)| !found.contains(*row))
+        .filter_map(|(row, period)| {
+            let period = period.as_ref()?;
+            Some((row.clone(), line_with_period(row, period.as_str())))
+        });
+    for (row, line) in rows.chain(edited) {
+        ccas.entry(row.cca_name.clone())
+            .or_default()
+            .insert(row, line);
+    }
+    ccas
+}
+
+/// The first file listing each CCA, in iteration order: where its new rows go.
+pub fn homes<'a>(files: impl IntoIterator<Item = (&'a str, &'a str)>) -> BTreeMap<String, String> {
+    let mut homes = BTreeMap::new();
+    for (path, body) in files {
+        for row in body
+            .lines()
+            .filter(|l| l.trim_end() != HEADER)
+            .filter_map(row_of)
+        {
+            homes
+                .entry(row.cca_name)
+                .or_insert_with(|| path.to_string());
         }
     }
-    files
+    homes
+}
+
+/// Adds the rows `body` does not already list, each after the last line of
+/// its position, else of its CCA, else at the end, so hand-kept grouping
+/// survives. An empty body gets the header first.
+pub fn insert(body: &str, rows: &BTreeMap<AppointmentRow, String>) -> String {
+    let mut lines: Vec<String> = body.lines().map(String::from).collect();
+    while lines.last().is_some_and(|l| l.trim().is_empty()) {
+        lines.pop();
+    }
+    if lines.is_empty() {
+        lines.push(HEADER.to_string());
+    }
+    for (row, line) in rows {
+        let keys: Vec<Option<AppointmentRow>> = lines.iter().map(|l| row_of(l)).collect();
+        if keys.iter().any(|key| key.as_ref() == Some(row)) {
+            continue;
+        }
+        let last = |same: &dyn Fn(&AppointmentRow) -> bool| {
+            keys.iter().rposition(|key| key.as_ref().is_some_and(same))
+        };
+        let after =
+            last(&|key| key.cca_name == row.cca_name && key.position_name == row.position_name)
+                .or_else(|| last(&|key| key.cca_name == row.cca_name))
+                .unwrap_or(lines.len() - 1);
+        lines.insert(after + 1, line.clone());
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
 }
 
 /// File-name slug for a CCA: lowercase, non-alphanumeric runs collapse to a
@@ -151,18 +208,6 @@ pub fn slug(name: &str) -> String {
         }
     }
     out.trim_end_matches('_').to_string()
-}
-
-/// Group rows into per-CCA files keyed by `<slug>.csv`.
-pub fn by_file(rows: Vec<AppointmentRow>) -> BTreeMap<String, Vec<AppointmentRow>> {
-    let mut files: BTreeMap<String, Vec<AppointmentRow>> = BTreeMap::new();
-    for row in rows {
-        files
-            .entry(format!("{}.csv", slug(&row.cca_name)))
-            .or_default()
-            .push(row);
-    }
-    files
 }
 
 /// A row rendered as one CSV line with minimal quoting.
@@ -224,35 +269,6 @@ fn csv_field(field: &str) -> String {
     } else {
         field.to_string()
     }
-}
-
-/// Merge rows into an existing file body (or `None` for a new file): header
-/// first, then the union of existing data lines and the new rows, sorted and
-/// deduplicated. Existing lines are never dropped, so the export stays
-/// adds-only under intranet's declarative reconciliation.
-pub fn merge(existing: Option<&str>, rows: &[AppointmentRow]) -> String {
-    merge_lines(existing, rows.iter().map(csv_line))
-}
-
-/// `merge` for rows carrying the operator's period.
-pub fn merge_lines(existing: Option<&str>, new: impl IntoIterator<Item = String>) -> String {
-    let mut lines: Vec<String> = existing
-        .unwrap_or("")
-        .lines()
-        .map(str::trim_end)
-        .filter(|l| !l.is_empty() && *l != HEADER)
-        .map(String::from)
-        .collect();
-    lines.extend(new);
-    lines.sort();
-    lines.dedup();
-    let mut body = String::from(HEADER);
-    for line in lines {
-        body.push('\n');
-        body.push_str(&line);
-    }
-    body.push('\n');
-    body
 }
 
 #[cfg(test)]
@@ -396,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn unplaced_keeps_adds_no_file_took_and_drops_settled_removals() {
+    fn additions_take_unheld_adds_and_drop_settled_removals() {
         let edits = DirectoryEdits::from([
             (
                 row("Badminton F", "Captain", "new@x"),
@@ -410,11 +426,60 @@ mod tests {
         ]);
         let found = BTreeSet::from([row("Badminton F", "Captain", "ben@x")]);
         assert_eq!(
-            unplaced(&edits, &found),
-            BTreeMap::from([(
-                "badminton_f.csv".to_string(),
-                vec!["new@x,Badminton F,Captain,semester-1".to_string()]
-            )])
+            additions(vec![row("Zeta", "Chair", "z@x")], &edits, &found),
+            BTreeMap::from([
+                (
+                    "Badminton F".to_string(),
+                    BTreeMap::from([(
+                        row("Badminton F", "Captain", "new@x"),
+                        "new@x,Badminton F,Captain,semester-1".to_string()
+                    )])
+                ),
+                (
+                    "Zeta".to_string(),
+                    BTreeMap::from([(
+                        row("Zeta", "Chair", "z@x"),
+                        "z@x,Zeta,Chair,full-year".to_string()
+                    )])
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn additions_let_an_edit_period_override_the_run_row() {
+        let edits = DirectoryEdits::from([(
+            row("Alpha", "Chair", "a@x"),
+            Some(CommitmentPeriod::Semester2),
+        )]);
+        let ccas = additions(vec![row("Alpha", "Chair", "a@x")], &edits, &BTreeSet::new());
+        assert_eq!(
+            ccas["Alpha"].values().collect::<Vec<_>>(),
+            vec!["a@x,Alpha,Chair,semester-2"]
+        );
+    }
+
+    #[test]
+    fn homes_pick_the_first_file_listing_each_cca() {
+        let homes = homes([
+            (
+                "committees/shweb.csv",
+                "user_email,cca_name,position_name,commitment_period\nann@x,Sheares Web,Chair,full-year\n",
+            ),
+            ("sports/all.csv", EXISTING),
+            ("later.csv", "ben@x,Sheares Web,Developer,full-year\n"),
+        ]);
+        assert_eq!(
+            homes,
+            BTreeMap::from([
+                ("Badminton F".to_string(), "sports/all.csv".to_string()),
+                ("Say, \"Hi\"".to_string(), "sports/all.csv".to_string()),
+                (
+                    "Sheares Web".to_string(),
+                    "committees/shweb.csv".to_string()
+                ),
+            ]),
+            "the header is not a CCA, and an earlier file wins"
         );
     }
 
@@ -590,24 +655,6 @@ mod tests {
     }
 
     #[test]
-    fn by_file_groups_rows_under_cca_slug_filenames() {
-        let rows = vec![
-            row("Alpha Beta", "Chair", "a@x"),
-            row("Zeta", "Chair", "z@x"),
-            row("Alpha Beta", "Member", "b@x"),
-        ];
-        let files = by_file(rows.clone());
-        assert_eq!(
-            files.keys().cloned().collect::<Vec<_>>(),
-            vec!["alpha_beta.csv", "zeta.csv"]
-        );
-        assert_eq!(
-            files["alpha_beta.csv"],
-            vec![rows[0].clone(), rows[2].clone()]
-        );
-    }
-
-    #[test]
     fn csv_line_orders_fields_and_appends_commitment_period() {
         assert_eq!(
             csv_line(&row("Alpha", "Chair", "a@x")),
@@ -623,45 +670,73 @@ mod tests {
         );
     }
 
-    #[test]
-    fn merge_creates_a_new_file_with_header() {
-        let body = merge(None, &[row("Alpha", "Chair", "a@x")]);
-        assert_eq!(
-            body,
-            "user_email,cca_name,position_name,commitment_period\na@x,Alpha,Chair,full-year\n"
-        );
+    fn lines(rows: &[(AppointmentRow, &str)]) -> BTreeMap<AppointmentRow, String> {
+        rows.iter()
+            .map(|(row, period)| (row.clone(), line_with_period(row, period)))
+            .collect()
     }
 
     #[test]
-    fn merge_appends_missing_rows_keeps_existing_and_deduplicates() {
-        let existing = "user_email,cca_name,position_name,commitment_period\n\
-                        old@x,Alpha,Chair,full-year\n";
-        let body = merge(
-            Some(existing),
-            &[
-                row("Alpha", "Chair", "old@x"),
-                row("Alpha", "Chair", "new@x"),
-            ],
+    fn insert_places_rows_after_their_position_then_their_cca() {
+        let body = insert(
+            EXISTING,
+            &lines(&[
+                (row("Badminton F", "Captain", "zed@x"), "full-year"),
+                (row("Badminton F", "Manager", "dan@x"), "semester-1"),
+                (row("Other", "Chair", "eve@x"), "full-year"),
+            ]),
         );
         assert_eq!(
             body,
             "user_email,cca_name,position_name,commitment_period\n\
-             new@x,Alpha,Chair,full-year\n\
-             old@x,Alpha,Chair,full-year\n"
+             ann@x,Badminton F,Captain,full-year\n\
+             zed@x,Badminton F,Captain,full-year\n\
+             ben@x,Badminton F,Vice Captain,full-year\n\
+             dan@x,Badminton F,Manager,semester-1\n\
+             cat@x,\"Say, \"\"Hi\"\"\",Chair,full-year\n\
+             eve@x,Other,Chair,full-year\n"
         );
     }
 
     #[test]
-    fn merge_tolerates_missing_trailing_newline_and_blank_lines() {
-        let existing = "user_email,cca_name,position_name,commitment_period\n\
-                        \n\
-                        old@x,Alpha,Chair,full-year";
-        let body = merge(Some(existing), &[row("Alpha", "Chair", "new@x")]);
+    fn insert_skips_keys_the_file_already_lists_whatever_their_period() {
+        let body = insert(
+            EXISTING,
+            &lines(&[(row("Badminton F", "Captain", "ann@x"), "semester-2")]),
+        );
+        assert_eq!(body, EXISTING);
+    }
+
+    #[test]
+    fn insert_orders_new_rows_within_a_position() {
+        let body = insert(
+            "user_email,cca_name,position_name,commitment_period\nold@x,Alpha,Chair,full-year",
+            &lines(&[
+                (row("Alpha", "Chair", "b@x"), "full-year"),
+                (row("Alpha", "Chair", "a@x"), "full-year"),
+            ]),
+        );
         assert_eq!(
             body,
             "user_email,cca_name,position_name,commitment_period\n\
-             new@x,Alpha,Chair,full-year\n\
-             old@x,Alpha,Chair,full-year\n"
+             old@x,Alpha,Chair,full-year\n\
+             a@x,Alpha,Chair,full-year\n\
+             b@x,Alpha,Chair,full-year\n"
+        );
+    }
+
+    #[test]
+    fn insert_starts_an_empty_file_with_the_header_and_drops_trailing_blanks() {
+        let rows = lines(&[(row("Alpha", "Chair", "a@x"), "full-year")]);
+        let expected =
+            "user_email,cca_name,position_name,commitment_period\na@x,Alpha,Chair,full-year\n";
+        assert_eq!(insert("", &rows), expected);
+        assert_eq!(
+            insert(
+                "user_email,cca_name,position_name,commitment_period\n\n\n",
+                &rows
+            ),
+            expected
         );
     }
 }
