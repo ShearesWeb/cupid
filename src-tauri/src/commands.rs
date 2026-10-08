@@ -1,12 +1,13 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use cupid::data::conn::ConnSpec;
+use cupid::data::conn::{ConnSpec, ConnectEvent};
 use cupid::data::preallocations::{self, PreallocationRecord};
 use cupid::directory::{CommitmentPeriod, Directory, DirectoryError, DirectorySnapshot};
 use cupid::models::{ApplicantIdx, Pool, PositionIdx};
 use cupid::snapshot::AllocationSnapshot;
 use tauri::State;
+use tauri::ipc::Channel;
 use tauri_plugin_dialog::DialogExt;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -81,24 +82,33 @@ fn load_inputs(spec: &ConnSpec, store: &Path) -> Result<Inputs, String> {
 }
 
 /// Point the app at a Supabase project. Verifies the credentials with a
-/// probe query before storing them; on success any loaded corpus is dropped
-/// (it belongs to the previous database) and the target description returned.
+/// probe query before storing them, streaming each connection step to
+/// `on_event`; on success any loaded corpus is dropped (it belongs to the
+/// previous database) and the target description returned.
 #[tauri::command]
 pub async fn connect(
     state: State<'_, AppState>,
     project_ref: String,
     password: String,
     region: Option<String>,
+    on_event: Channel<ConnectEvent>,
 ) -> Result<String, String> {
     let spec = ConnSpec::supabase(&project_ref, &password, region.as_deref());
 
-    block_in_place(|| -> Result<(), String> {
-        let mut client = spec.connect().map_err(|e| e.to_string())?;
+    let port = block_in_place(|| -> Result<u16, String> {
+        let (mut client, port) = spec
+            .connect_traced(&mut |event| {
+                // The step log is advisory: a closed window must not fail
+                // the connect itself, whose result is returned regardless.
+                let _ = on_event.send(event);
+            })
+            .map_err(|e| e.to_string())?;
         client
             .batch_execute("SELECT 1")
             .map_err(|e| e.to_string())?;
-        Ok(())
+        Ok(port)
     })?;
+    let spec = spec.pinned_to(port);
 
     let mut inputs = state.inputs.lock().await;
     *state.conn.lock().await = Some(spec.clone());

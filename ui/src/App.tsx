@@ -3,7 +3,7 @@
 // and replaces the mock splash loader with a real "sync to load" empty state.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./lib/api.ts";
-import type { CommitmentPeriod, DirectorySnapshot, Snapshot } from "./lib/types.ts";
+import type { CommitmentPeriod, ConnectEvent, DirectorySnapshot, Snapshot } from "./lib/types.ts";
 import { buildIndexes, type Indexes } from "./lib/indexes.ts";
 import { buildDirectoryIndex, kindLabel } from "./lib/directory.ts";
 import { errorMessage, fmtTime } from "./lib/format.ts";
@@ -26,6 +26,7 @@ import { Preallocations as PreallocationsScreen } from "./screens/Preallocations
 import { Review as ReviewScreen, type CommitState } from "./screens/Review.tsx";
 import { Ccas as CcasScreen } from "./screens/Ccas.tsx";
 import { TextInput } from "./components/TextInput.tsx";
+import { ConnectLog, type ConnectLogState } from "./components/ConnectLog.tsx";
 
 type Screen = "alloc" | "ccas" | "prealloc" | "review";
 type Detail = { type: "applicant" | "position"; id: number } | null;
@@ -104,6 +105,9 @@ function App() {
   const [connBusy, setConnBusy] = useState(false);
   const [connError, setConnError] = useState<string | null>(null);
   const [changingConn, setChangingConn] = useState(false);
+  // Step trace of the connect in progress, kept after a failure so the
+  // operator can see which layer of the network path broke.
+  const [connLog, setConnLog] = useState<ConnectLogState | null>(null);
 
   // Updates: version for the sidebar, a pending release for the modal.
   const [version, setVersion] = useState<string | null>(null);
@@ -149,8 +153,9 @@ function App() {
     [],
   );
 
-  const doSync = async () => {
-    if (syncing) return;
+  // Resolves to the failure message, or null once the corpus is loaded.
+  const doSync = async (): Promise<string | null> => {
+    if (syncing) return null;
     setSyncing(true);
     try {
       const snap = await api.sync();
@@ -162,8 +167,11 @@ function App() {
       setDetail(null);
       setMatch(null);
       snap.warnings.forEach((w) => toast("error", w));
+      return null;
     } catch (e) {
-      toast("error", errorMessage(e));
+      const message = errorMessage(e);
+      toast("error", message);
+      return message;
     } finally {
       setSyncing(false);
     }
@@ -240,8 +248,11 @@ function App() {
     if (connBusy) return;
     setConnBusy(true);
     setConnError(null);
+    setConnLog({ events: [], load: null });
+    const onEvent = (event: ConnectEvent) =>
+      setConnLog((log) => (log ? { ...log, events: [...log.events, event] } : log));
     try {
-      const label = await api.connect(projectRef, password, region.trim() ? region.trim() : null);
+      const label = await api.connect(projectRef, password, region.trim() ? region.trim() : null, onEvent);
       localStorage.setItem("cupid.projectRef", projectRef.trim());
       localStorage.setItem("cupid.region", region.trim());
       setConnInfo(label);
@@ -259,7 +270,11 @@ function App() {
     } finally {
       setConnBusy(false);
     }
-    await doSync();
+    setConnLog((log) => log && { ...log, load: { label: "Load data", status: "running", detail: null } });
+    const failure = await doSync();
+    setConnLog((log) =>
+      failure === null ? null : log && { ...log, load: { label: "Load data", status: "failed", detail: failure } },
+    );
   };
 
   // Replace the snapshot without touching stepper state: commit and purge
@@ -369,11 +384,15 @@ function App() {
       <>
         <Splash
           syncing={syncing}
-          onSync={doSync}
+          onSync={() => {
+            setConnLog(null);
+            void doSync();
+          }}
           connLoaded={connLoaded}
           connInfo={connInfo}
           connBusy={connBusy}
           connError={connError}
+          connLog={connLog}
           onConnect={doConnect}
         />
         {pendingUpdate ? (
@@ -425,6 +444,7 @@ function App() {
           connInfo={connInfo}
           onChangeDb={() => {
             setConnError(null);
+            setConnLog(null);
             setChangingConn(true);
           }}
           version={version}
@@ -476,10 +496,12 @@ function App() {
             <ConnectForm
               busy={connBusy}
               error={connError}
+              log={connLog}
               onConnect={doConnect}
               onCancel={() => {
                 setChangingConn(false);
                 setConnError(null);
+                setConnLog(null);
               }}
             />
           </div>
@@ -502,11 +524,13 @@ function App() {
 function ConnectForm({
   busy,
   error,
+  log,
   onConnect,
   onCancel,
 }: {
   busy: boolean;
   error: string | null;
+  log: ConnectLogState | null;
   onConnect: (projectRef: string, password: string, region: string) => void;
   onCancel?: () => void;
 }) {
@@ -532,7 +556,7 @@ function ConnectForm({
       />
       <TextInput
         label="Region (needed on networks without IPv6)"
-        placeholder="e.g. ap-southeast-1 — uses the session pooler"
+        placeholder="e.g. ap-southeast-1: routes through the pooler"
         value={region}
         onChange={(e) => setRegion(e.target.value)}
       />
@@ -551,6 +575,7 @@ function ConnectForm({
           {error}
         </div>
       ) : null}
+      {log ? <ConnectLog log={log} /> : null}
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 2 }}>
         {onCancel ? (
           <Button color="ghost" onClick={onCancel}>
@@ -579,6 +604,7 @@ function Splash({
   connInfo,
   connBusy,
   connError,
+  connLog,
   onConnect,
 }: {
   syncing: boolean;
@@ -587,6 +613,7 @@ function Splash({
   connInfo: string | null;
   connBusy: boolean;
   connError: string | null;
+  connLog: ConnectLogState | null;
   onConnect: (projectRef: string, password: string, region: string) => void;
 }) {
   const [showForm, setShowForm] = useState(false);
@@ -621,7 +648,16 @@ function Splash({
       >
         <Icon name="heart" size={24} color="#fff" />
       </div>
-      {!connLoaded ? null : syncing ? (
+      {!connLoaded ? null : syncing && connLog ? (
+        <>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "var(--token-color-foreground-strong)" }}>
+            Loading data&hellip;
+          </div>
+          <div style={{ width: 340 }}>
+            <ConnectLog log={connLog} />
+          </div>
+        </>
+      ) : syncing ? (
         <>
           <div style={{ fontSize: 15, fontWeight: 700, color: "var(--token-color-foreground-strong)" }}>
             Syncing&hellip;
@@ -645,12 +681,13 @@ function Splash({
           </div>
           <div style={{ fontSize: 13, maxWidth: 340, textAlign: "center" }}>
             Enter the Supabase project ref and database password. Direct connections resolve over IPv6 only, so
-            on any other network add the project's region to route through the session pooler.
+            on any other network add the project's region to route through the pooler.
           </div>
           <div style={{ width: 340 }}>
             <ConnectForm
               busy={connBusy}
               error={connError}
+              log={connLog}
               onConnect={onConnect}
               onCancel={connInfo ? () => setShowForm(false) : undefined}
             />
@@ -664,6 +701,11 @@ function Splash({
           <div style={{ fontSize: 13, maxWidth: 340, textAlign: "center" }}>
             Connected to <strong>{connInfo}</strong>. Sync to pull applicants, positions, and appointments.
           </div>
+          {connLog ? (
+            <div style={{ width: 340 }}>
+              <ConnectLog log={connLog} />
+            </div>
+          ) : null}
           <Button color="primary" icon="download" onClick={onSync}>
             Sync
           </Button>

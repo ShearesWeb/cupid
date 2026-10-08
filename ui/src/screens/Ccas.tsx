@@ -60,7 +60,7 @@ function CcaList({ directory, dx, onOpen }: { directory: DirectorySnapshot; dx: 
     .filter((c) => !q || c.name.toLowerCase().includes(q));
   return (
     <div style={pageStyle(1120)}>
-      <PageTitle title="CCAs" sub="Every CCA in the hall. Open one to manage its members." />
+      <PageTitle title="Manage CCA Roles and Members" />
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
         <ChipRow label="Kind" options={[["all", "All"], ...kinds.map((k): [string, string] => [k, kindLabel(k)])]} value={kind} onChange={setKind} />
         <div style={{ width: 260 }}>

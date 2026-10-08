@@ -188,3 +188,11 @@ export interface PurgeReceipt {
   deleted: number;
   snapshot: AllocationSnapshot;
 }
+
+export type ConnectStage = "dns" | "tcp" | "signIn";
+export type StepStatus = "running" | "ok" | "failed" | "skipped";
+
+/** Streamed by the connect command: a target opens each candidate endpoint. */
+export type ConnectEvent =
+  | { kind: "target"; host: string; port: number }
+  | { kind: "step"; stage: ConnectStage; status: StepStatus; detail: string | null };

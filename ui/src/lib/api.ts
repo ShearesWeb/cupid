@@ -1,13 +1,19 @@
-import { invoke } from "@tauri-apps/api/core";
-import type { ExportReceipt, PurgeReceipt, AllocationSnapshot, DirectorySnapshot } from "./types";
+import { Channel, invoke } from "@tauri-apps/api/core";
+import type { ConnectEvent, ExportReceipt, PurgeReceipt, AllocationSnapshot, DirectorySnapshot } from "./types";
 
-/// Verify Supabase credentials and store them as the active connection.
+/// Verify Supabase credentials and store them as the active connection,
+/// reporting each DNS/TCP/sign-in step to `onEvent` as it happens.
 /// Resolves to a display label for the target (never contains the password).
 export const connect = (
   projectRef: string,
   password: string,
   region: string | null,
-): Promise<string> => invoke("connect", { projectRef, password, region });
+  onEvent: (event: ConnectEvent) => void,
+): Promise<string> => {
+  const channel = new Channel<ConnectEvent>();
+  channel.onmessage = onEvent;
+  return invoke("connect", { projectRef, password, region, onEvent: channel });
+};
 
 /// Display label of the active connection, or null when none is configured.
 export const connectionInfo = (): Promise<string | null> => invoke("connection_info");

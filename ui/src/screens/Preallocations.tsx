@@ -89,7 +89,7 @@ export function Preallocations({ snapshot, idx, onAdd, onRemove, onOpenMatch, to
 
   return (
     <div style={{ padding: "24px 28px 48px", maxWidth: 860, margin: "0 auto" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
         <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, letterSpacing: "-0.4px", color: "var(--token-color-foreground-strong)" }}>
           Preallocations
         </h1>
@@ -110,10 +110,6 @@ export function Preallocations({ snapshot, idx, onAdd, onRemove, onOpenMatch, to
           {snapshot.preallocations.length} granted
         </span>
       </div>
-      <p style={{ margin: "0 0 18px", fontSize: 13, color: "var(--token-color-foreground-faint)", maxWidth: 620 }}>
-        Operator-fixed assignments. A preallocated resident holds the position outright: the pair is seated before
-        matching, consumes the seat and quota, and cannot be displaced. Changing preallocations invalidates the current run.
-      </p>
 
       <Card level="base" padding="none" style={{ overflow: "visible", marginBottom: 18 }}>
         <div

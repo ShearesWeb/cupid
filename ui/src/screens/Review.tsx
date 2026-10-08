@@ -54,12 +54,9 @@ export function Review(props: ReviewProps) {
   if (!hasRun && !commitState.exported) {
     return (
       <div style={{ padding: "24px 28px 48px", maxWidth: 1120, margin: "0 auto" }}>
-        <h1 style={{ margin: "0 0 4px", fontSize: 22, fontWeight: 700, letterSpacing: "-0.4px", color: "var(--token-color-foreground-strong)" }}>
+        <h1 style={{ margin: "0 0 18px", fontSize: 22, fontWeight: 700, letterSpacing: "-0.4px", color: "var(--token-color-foreground-strong)" }}>
           Review & commit
         </h1>
-        <p style={{ margin: "0 0 18px", fontSize: 13, color: "var(--token-color-foreground-faint)" }}>
-          Review the run, then export the merge request, archive and purge.
-        </p>
         <RunPrompt msg="Run matching first, there's nothing to review yet." running={running} onRun={onRun} />
       </div>
     );
@@ -93,13 +90,9 @@ export function Review(props: ReviewProps) {
 
   return (
     <div style={{ padding: "24px 28px 48px", maxWidth: 1120, margin: "0 auto" }}>
-      <h1 style={{ margin: "0 0 4px", fontSize: 22, fontWeight: 700, letterSpacing: "-0.4px", color: "var(--token-color-foreground-strong)" }}>
+      <h1 style={{ margin: "0 0 18px", fontSize: 22, fontWeight: 700, letterSpacing: "-0.4px", color: "var(--token-color-foreground-strong)" }}>
         Review & commit
       </h1>
-      <p style={{ margin: "0 0 18px", fontSize: 13, color: "var(--token-color-foreground-faint)", maxWidth: 620 }}>
-        These are the allocation and directory changes this run will export. Nothing is written to the database: the export pushes
-        CSV files as a merge request to the intranet repo.
-      </p>
       <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
         <CountPill label="existing committed" value={snapshot.committed.length} color="var(--token-color-foreground-action)" />
         <CountPill label={commitState.exported ? "exported this run" : "to publish"} value={`+${addCount}`} color="var(--token-color-foreground-success)" />
@@ -629,6 +622,8 @@ function FinalizeStepper({
   const totalRows = prefRows + snapshot.positions.reduce((s, p) => s + p.chairRank.length, 0);
   const heldRows = heldBackRows(snapshot, new Set(commitState.excluded));
   const purgeRows = totalRows - heldRows;
+  // Member-only cycles have no preference data; keep the steps once started so the receipt stays visible.
+  const showPurgeSteps = purgeRows > 0 || commitState.archived || commitState.purged;
   const canPurge = purgeText.trim().toUpperCase() === "PURGE";
 
   const confirmPreview = () => onCommitState((prev) => ({ ...prev, previewed: true }));
@@ -723,8 +718,8 @@ function FinalizeStepper({
             </div>
             {commitState.prUrl ? <MergeRequestLink url={commitState.prUrl} toast={toast} /> : null}
             <div style={{ fontSize: 12.5, color: "var(--token-color-foreground-faint)" }}>
-              Open the merge request and get it merged — intranet's CI writes the appointments. They appear here after the
-              next sync.
+              Copy this merge request link and forward it to the Sheares Web Chairperson or Vice Chairperson to audit the
+              changeset for deployment.
             </div>
           </div>
         ) : (
@@ -766,6 +761,8 @@ function FinalizeStepper({
         )}
       </CommitCard>
 
+      {showPurgeSteps ? (
+        <>
       <CommitCard n={3} title="Archive a verified backup" done={commitState.archived} locked={!commitState.exported} danger>
         <div style={{ fontSize: 13, color: "var(--token-color-foreground-primary)", marginBottom: 12 }}>
           Export a complete backup of all preference, ranking and preallocation data <strong>before</strong> purging.
@@ -855,6 +852,8 @@ function FinalizeStepper({
           </>
         )}
       </CommitCard>
+        </>
+      ) : null}
     </>
   );
 }
