@@ -2,22 +2,24 @@
 // Ports reference/cca-console-design.html renderDetailPage (221-227).
 import { Card, Icon } from "../components/index.ts";
 import type { Indexes } from "../lib/indexes.ts";
-import type { Snapshot } from "../lib/types.ts";
+import type { DirectorySnapshot, Snapshot } from "../lib/types.ts";
 import { ApplicantDetail } from "./ApplicantDetail.tsx";
 import { PositionDetail } from "./PositionDetail.tsx";
 
 export interface DetailPageProps {
   detail: { type: "applicant" | "position"; id: number };
   snapshot: Snapshot;
+  directory: DirectorySnapshot | null;
   idx: Indexes;
   screen: "alloc" | "ccas" | "prealloc" | "review";
   onBack: () => void;
   onOpenMatch: (aid: number, pid: number) => void;
   onOpenDetail: (type: "applicant" | "position", id: number) => void;
+  onOpenCca: (ccaId: number) => void;
 }
 
 export function DetailPage(props: DetailPageProps) {
-  const { detail, snapshot, idx, screen, onBack, onOpenMatch } = props;
+  const { detail, snapshot, directory, idx, screen, onBack, onOpenMatch, onOpenCca } = props;
   const isApp = detail.type === "applicant";
   return (
     <div style={{ padding: "24px 28px 48px", maxWidth: 860, margin: "0 auto" }}>
@@ -45,7 +47,14 @@ export function DetailPage(props: DetailPageProps) {
       </button>
       <Card padding="large">
         {isApp ? (
-          <ApplicantDetail aid={detail.id} snapshot={snapshot} idx={idx} onOpenMatch={onOpenMatch} />
+          <ApplicantDetail
+            aid={detail.id}
+            snapshot={snapshot}
+            directory={directory}
+            idx={idx}
+            onOpenMatch={onOpenMatch}
+            onOpenCca={onOpenCca}
+          />
         ) : (
           <PositionDetail pid={detail.id} snapshot={snapshot} idx={idx} onOpenMatch={onOpenMatch} />
         )}

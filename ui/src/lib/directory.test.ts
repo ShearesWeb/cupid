@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildDirectoryIndex, capacityText, isFull } from "./directory";
+import { buildDirectoryIndex, capacityText, heldOutsideAllocation, isFull } from "./directory";
 import type { DirectoryAppointmentView, DirectoryPosition, DirectorySnapshot } from "./types";
 
 const position = (id: number, positionType: DirectoryPosition["positionType"], capacity: number | null): DirectoryPosition => ({
@@ -61,5 +61,26 @@ describe("capacity", () => {
     expect(isFull(position(1, "member", 0), 0)).toBe(true);
     expect(capacityText(position(1, "member", null), 3)).toBe("3/∞");
     expect(capacityText(position(1, "lead", 1), 1)).toBe("1/1");
+  });
+});
+
+describe("heldOutsideAllocation", () => {
+  const held = (committed: number[]) =>
+    heldOutsideAllocation(
+      { ...directory, positions: [...directory.positions, position(40, "maincomm", 2)], appointments: [holder(1, 30), holder(1, 40), ...directory.appointments] },
+      1,
+      new Set(committed),
+    ).map((h) => h.position.id);
+
+  it("lists every role but residence, most significant first", () => {
+    expect(held([])).toEqual([20, 40, 30]);
+  });
+
+  it("leaves committee seats the allocation already shows to that section", () => {
+    expect(held([40])).toEqual([20, 30]);
+  });
+
+  it("is empty before the directory loads", () => {
+    expect(heldOutsideAllocation(null, 1, new Set())).toEqual([]);
   });
 });

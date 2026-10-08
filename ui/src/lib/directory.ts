@@ -5,6 +5,7 @@ import type {
   CcaKind,
   CommitmentPeriod,
   DirectoryAppointmentView,
+  DirectoryCca,
   DirectoryPosition,
   DirectoryPositionType,
   DirectorySnapshot,
@@ -116,4 +117,33 @@ export function buildDirectoryIndex(directory: DirectorySnapshot): DirectoryInde
     removedByPosition,
     memberCount: (ccaId) => members.get(ccaId)?.size ?? 0,
   };
+}
+
+export interface HeldPosition {
+  appointment: DirectoryAppointmentView;
+  position: DirectoryPosition;
+  cca: DirectoryCca | undefined;
+}
+
+/**
+ * Every directory role the person holds outside the allocation's committee
+ * seats. The allocation snapshot drops these, so they come from the directory.
+ * Residence is held by nearly everyone and would only add noise.
+ */
+export function heldOutsideAllocation(directory: DirectorySnapshot | null, aid: number, committed: Set<number>): HeldPosition[] {
+  if (!directory) return [];
+  const positionById = new Map(directory.positions.map((p) => [p.id, p]));
+  const ccaById = new Map(directory.ccas.map((c) => [c.id, c]));
+  const held: HeldPosition[] = [];
+  for (const appointment of directory.appointments) {
+    if (appointment.userId !== aid || committed.has(appointment.positionId)) continue;
+    const position = positionById.get(appointment.positionId);
+    if (!position || position.positionType === "resident") continue;
+    held.push({ appointment, position, cca: ccaById.get(position.ccaId) });
+  }
+  return held.sort(
+    (x, y) =>
+      typeRank(x.position.positionType) - typeRank(y.position.positionType) ||
+      (x.cca?.name ?? "").localeCompare(y.cca?.name ?? ""),
+  );
 }
