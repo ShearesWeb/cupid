@@ -1,7 +1,7 @@
 // ApplicantDetail.tsx — task-14: applicant detail page.
 // Ports reference/cca-console-design.html applicantDetail (556-574). All displayed values are
 // looked up from snapshot/idx — this screen never recomputes statuses or quota rules.
-import { Avatar, ChoiceCoverage, MatchRow, QuotaWidget } from "../components/index.ts";
+import { Avatar, CcaIcon, ChoiceCoverage, MatchRow, QuotaWidget } from "../components/index.ts";
 import { pk, type Indexes } from "../lib/indexes.ts";
 import type { Snapshot } from "../lib/types.ts";
 import { DetailHero, OutcomeLegend, Section } from "./shared.tsx";
@@ -23,6 +23,10 @@ export function ApplicantDetail({ aid, snapshot, idx, onOpenMatch }: ApplicantDe
     const pos = idx.posById.get(pid);
     const cca = pos ? idx.ccaById.get(pos.ccaId) : undefined;
     return `${cca?.name ?? ""} · ${pos?.name ?? ""}`;
+  };
+  const posIcon = (pid: number) => {
+    const pos = idx.posById.get(pid);
+    return pos ? <CcaIcon kind={idx.ccaById.get(pos.ccaId)?.kind} size={20} /> : null;
   };
 
   const existingPos = snapshot.committed.filter((c) => c.applicantId === aid).map((c) => c.positionId);
@@ -48,6 +52,7 @@ export function ApplicantDetail({ aid, snapshot, idx, onOpenMatch }: ApplicantDe
                 key={`e${pid}`}
                 num={k + 1}
                 name={posLabel(pid)}
+                leading={posIcon(pid)}
                 status="existing"
                 statusLabel="Appointment"
                 onClick={() => onOpenMatch(aid, pid)}
@@ -69,6 +74,7 @@ export function ApplicantDetail({ aid, snapshot, idx, onOpenMatch }: ApplicantDe
                   key={`n${pid}`}
                   num={k + 1}
                   name={posLabel(pid)}
+                leading={posIcon(pid)}
                   status="allocated"
                   statusLabel="New"
                   onClick={() => onOpenMatch(aid, pid)}
@@ -114,6 +120,7 @@ export function ApplicantDetail({ aid, snapshot, idx, onOpenMatch }: ApplicantDe
                 key={pid}
                 num={i + 1}
                 name={posLabel(pid)}
+                leading={posIcon(pid)}
                 sub={hasRun ? (o?.detail ?? null) : null}
                 meta={cr ? `chair #${cr}` : null}
                 status={o?.status ?? "neutral"}

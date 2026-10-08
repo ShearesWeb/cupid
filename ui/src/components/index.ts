@@ -14,3 +14,4 @@ export * from "./statusStyle.ts";
 export * from "./MatchRow.tsx";
 export * from "./QuotaWidget.tsx";
 export * from "./UpdatePrompt.tsx";
+export * from "./CcaIcon.tsx";

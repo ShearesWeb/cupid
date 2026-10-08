@@ -153,7 +153,9 @@ pub struct CcaAppointmentView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+// `rename_all` only renames the variant tags; the struct-variant fields need
+// `rename_all_fields` to reach the UI as camelCase too.
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum CcaAppointmentChange {
     Add {
         appointment: CcaAppointment,
@@ -193,4 +195,31 @@ pub struct DirectorySnapshot {
     pub positions: Vec<DirectoryPositionView>,
     pub appointments: Vec<CcaAppointmentView>,
     pub changes: Vec<CcaAppointmentChange>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn appointment_changes_serialize_camel_case_fields() {
+        let remove = CcaAppointmentChange::Remove {
+            user_id: 1,
+            position_id: 2,
+        };
+        assert_eq!(
+            serde_json::to_value(&remove).unwrap(),
+            serde_json::json!({ "kind": "remove", "userId": 1, "positionId": 2 })
+        );
+        let change = CcaAppointmentChange::ChangePeriod {
+            user_id: 1,
+            position_id: 2,
+            from: CommitmentPeriod::FullYear,
+            to: CommitmentPeriod::Semester1,
+        };
+        let json = serde_json::to_value(&change).unwrap();
+        assert_eq!(json["kind"], "changePeriod");
+        assert_eq!(json["userId"], 1);
+        assert_eq!(json["positionId"], 2);
+    }
 }

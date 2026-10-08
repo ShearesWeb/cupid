@@ -6,7 +6,7 @@ import { Card, Button, Icon } from "../components/index.ts";
 import { statusStyle } from "../components/statusStyle.ts";
 import type { Status } from "../lib/types.ts";
 
-export function EmptyState({ title, sub }: { title: string; sub: string }) {
+export function EmptyState({ title, sub, icon = "search" }: { title: string; sub: string; icon?: string }) {
   return (
     <Card
       padding="large"
@@ -23,11 +23,77 @@ export function EmptyState({ title, sub }: { title: string; sub: string }) {
           justifyContent: "center",
         }}
       >
-        <Icon name="search" size={20} color="var(--token-color-foreground-faint)" />
+        <Icon name={icon} size={20} color="var(--token-color-foreground-faint)" />
       </div>
       <div style={{ fontSize: 14, fontWeight: 700, color: "var(--token-color-foreground-strong)" }}>{title}</div>
       <div style={{ fontSize: 12.5, color: "var(--token-color-foreground-faint)" }}>{sub}</div>
     </Card>
+  );
+}
+
+export function FilterChip({ label, on, onClick }: { label: string; on: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        border: "1px solid " + (on ? "var(--cupid-line)" : "var(--token-color-border-faint)"),
+        background: on ? "var(--cupid-soft)" : "transparent",
+        color: on ? "var(--cupid-strong)" : "var(--token-color-foreground-faint)",
+        cursor: "pointer",
+        font: "inherit",
+        fontSize: 12,
+        fontWeight: 600,
+        padding: "4px 11px",
+        borderRadius: 999,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+// A labelled row of filter chips (design chipRow); the active chip wears the brand tint.
+export function ChipRow<T extends string | number>({
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  options: [T, string][];
+  value: T;
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 5 }}>
+      <span
+        style={{
+          fontSize: 10.5,
+          fontWeight: 700,
+          letterSpacing: "0.6px",
+          textTransform: "uppercase",
+          color: "var(--token-color-foreground-faint)",
+          width: 52,
+        }}
+      >
+        {label}
+      </span>
+      {options.map(([v, l]) => (
+        <FilterChip key={v} label={l} on={value === v} onClick={() => onChange(v)} />
+      ))}
+    </div>
+  );
+}
+
+export function PageTitle({ title, sub }: { title: string; sub: string }) {
+  return (
+    <>
+      <h1 style={{ margin: "0 0 4px", fontSize: 22, fontWeight: 700, letterSpacing: "-0.4px", color: "var(--token-color-foreground-strong)" }}>
+        {title}
+      </h1>
+      <p style={{ margin: "0 0 18px", fontSize: 13, color: "var(--token-color-foreground-faint)", maxWidth: 620 }}>{sub}</p>
+    </>
   );
 }
 

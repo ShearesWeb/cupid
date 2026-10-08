@@ -1,5 +1,6 @@
 // MatchRow.tsx — port of reference lines 543-555 (matchRow). Shared by detail-page
 // sections (ApplicantDetail/PositionDetail) and later screens that list ranked/seated pairs.
+import type { ReactNode } from "react";
 import { Icon } from "./Icon.tsx";
 import { StatusPill } from "./StatusPill.tsx";
 import { statusStyle } from "./statusStyle.ts";
@@ -8,6 +9,8 @@ import type { Status } from "../lib/types.ts";
 export interface MatchRowProps {
   num: number;
   name: string;
+  /** Glyph shown before the name, e.g. the position's CCA icon. */
+  leading?: ReactNode;
   sub?: string | null;
   meta?: string | null;
   metaColor?: string;
@@ -18,7 +21,7 @@ export interface MatchRowProps {
 
 const TINTED: Status[] = ["existing", "allocated", "preallocated"];
 
-export function MatchRow({ num, name, sub, meta, metaColor, status, statusLabel, onClick }: MatchRowProps) {
+export function MatchRow({ num, name, leading, sub, meta, metaColor, status, statusLabel, onClick }: MatchRowProps) {
   const st = statusStyle(status);
   const tint = TINTED.includes(status);
   return (
@@ -54,15 +57,16 @@ export function MatchRow({ num, name, sub, meta, metaColor, status, statusLabel,
       <div style={{ flex: "1 1 160px", minWidth: 0 }}>
         <div
           style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 7,
             fontSize: 13.5,
             fontWeight: 600,
             color: "var(--token-color-foreground-strong)",
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
           }}
         >
-          {name}
+          {leading}
+          <span style={{ minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{name}</span>
         </div>
         {sub ? (
           <div style={{ fontSize: 11.5, color: "var(--token-color-foreground-faint)", marginTop: 2, lineHeight: 1.4 }}>
