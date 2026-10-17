@@ -1,7 +1,6 @@
 # cupid
 
-Two-sided matching engine and desktop console for Sheares CCA committee allocation.
-Chairs rank candidates, applicants rank positions, and cupid settles the market and exports the result.
+An internal management platform built on Rust for JCRC members to manage CCA appointments, with no code required. CCA allocation uses Gale-Shapley and immediate acceptance to match residents to positions fairly based on their preferences, while capping how many appointments any one resident can hold. The JCRC can preallocate or remove appointments as needed and review a full audit trail of every match. All changes are pushed to the intranet repository for upstream approval.
 
 ## Installation
 
