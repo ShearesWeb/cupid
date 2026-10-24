@@ -413,7 +413,6 @@ fn four_sub_and_four_sports_culture_needs_both_appeals() {
     assert!(!entry.over_combined_cap, "4S + 4 = 8 with both appeals");
     assert_eq!(entry.counts[0].total_limit, 8);
 
-    let mut holdings = holdings;
     holdings.push((3, pos(15, MEMBER), FullYear));
     let d = fixture(&holdings);
     assert!(d.committee_caps(&both).entries[0].over_combined_cap, "9 is never allowed");
