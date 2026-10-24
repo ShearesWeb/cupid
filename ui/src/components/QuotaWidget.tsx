@@ -10,8 +10,11 @@ import { statusStyle } from "./statusStyle.ts";
 import type { QuotaView } from "../lib/types.ts";
 
 export interface QuotaWidgetProps {
-  quota: QuotaView;
+  /** Null for residents outside the allocation: the box then shows only `caps`. */
+  quota: QuotaView | null;
   hasRun: boolean;
+  /** The CCA caps part (CapSummary), shown under the quota. */
+  caps?: ReactNode;
 }
 
 function loadoutText(main: number, block: number, sub: number): string {
@@ -22,7 +25,26 @@ function loadoutText(main: number, block: number, sub: number): string {
   return parts.join(" + ");
 }
 
-export function QuotaWidget({ quota, hasRun }: QuotaWidgetProps) {
+export function QuotaWidget({ quota, hasRun, caps }: QuotaWidgetProps) {
+  return (
+    <div
+      style={{
+        width: 226,
+        padding: "12px 14px 13px",
+        borderRadius: 11,
+        background: "var(--token-color-surface-faint)",
+        border: "1px solid var(--token-color-border-faint)",
+        flexShrink: 0,
+      }}
+    >
+      {quota ? <QuotaPart quota={quota} hasRun={hasRun} /> : null}
+      {quota && caps ? <div style={{ height: 1, margin: "12px 0", background: "var(--token-color-border-faint)" }} /> : null}
+      {caps}
+    </div>
+  );
+}
+
+function QuotaPart({ quota, hasRun }: { quota: QuotaView; hasRun: boolean }) {
   const { main, block, sub, canAddMain, canAddBlock, canAddSub, over } = quota;
   const full = !over && !canAddMain && !canAddBlock && !canAddSub;
 
@@ -88,16 +110,7 @@ export function QuotaWidget({ quota, hasRun }: QuotaWidgetProps) {
   for (let i = 0; i < sub; i++) tokens.push(chip(`s${i}`, "S", 21));
 
   return (
-    <div
-      style={{
-        width: 226,
-        padding: "12px 14px 13px",
-        borderRadius: 11,
-        background: "var(--token-color-surface-faint)",
-        border: "1px solid var(--token-color-border-faint)",
-        flexShrink: 0,
-      }}
-    >
+    <>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 9 }}>
         <span
           style={{
@@ -144,6 +157,6 @@ export function QuotaWidget({ quota, hasRun }: QuotaWidgetProps) {
       >
         {caption}
       </div>
-    </div>
+    </>
   );
 }

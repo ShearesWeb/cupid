@@ -15,3 +15,5 @@ export * from "./MatchRow.tsx";
 export * from "./QuotaWidget.tsx";
 export * from "./UpdatePrompt.tsx";
 export * from "./CcaIcon.tsx";
+export * from "./CapTags.tsx";
+export * from "./CapSummary.tsx";

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ExportReceipt, PurgeReceipt, AllocationSnapshot, DirectorySnapshot } from "./types";
+import type { ExportReceipt, PurgeReceipt, AllocationSnapshot, AppealChange, CapRules, CapWindow, CommitteeCapEntry, DirectorySnapshot } from "./types";
 
 /// Verify Supabase credentials and store them as the active connection.
 /// Resolves to a display label for the target (never contains the password).
@@ -24,6 +24,21 @@ export const removeAppointment = (userId: number, positionId: number): Promise<D
 
 export const updateAppointmentPeriod = (userId: number, positionId: number, period: string): Promise<DirectorySnapshot> =>
   invoke("update_appointment_period", { userId, positionId, period });
+
+/// Saved locally (appeals.json), like preallocations; never written to the database.
+export const setCapAppeals = (changes: AppealChange[]): Promise<DirectorySnapshot> => invoke("set_cap_appeals", { changes });
+
+/// Replace this year's caps and committee types; Rust validates before saving locally.
+export const setCapRules = (rules: CapRules): Promise<DirectorySnapshot> => invoke("set_cap_rules", { rules });
+
+export const setCapWindow = (window: CapWindow): Promise<DirectorySnapshot> => invoke("set_cap_window", { window });
+
+/// The resident's cap entry if the seat were added; null when the seat counts towards no cap.
+export const previewCommitteeCap = (userId: number, positionId: number, period: string): Promise<CommitteeCapEntry | null> =>
+  invoke("preview_committee_cap", { userId, positionId, period });
+
+/// One resident's cap counts for their profile; null when they hold no committee seat.
+export const residentCaps = (userId: number): Promise<CommitteeCapEntry | null> => invoke("resident_caps", { userId });
 
 export const runMatching = (): Promise<AllocationSnapshot> => invoke("run_matching");
 

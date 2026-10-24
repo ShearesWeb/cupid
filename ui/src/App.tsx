@@ -3,7 +3,8 @@
 // and replaces the mock splash loader with a real "sync to load" empty state.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./lib/api.ts";
-import type { CommitmentPeriod, DirectorySnapshot, Snapshot } from "./lib/types.ts";
+import type { MemberRef } from "./screens/Ccas.tsx";
+import type { AppealChange, CapRules, CapWindow, CommitmentPeriod, DirectorySnapshot, Snapshot } from "./lib/types.ts";
 import { buildIndexes, type Indexes } from "./lib/indexes.ts";
 import { buildDirectoryIndex, kindLabel } from "./lib/directory.ts";
 import { errorMessage, fmtTime } from "./lib/format.ts";
@@ -25,12 +26,27 @@ import { EventSidebar as EventSidebarScreen } from "./screens/EventSidebar.tsx";
 import { Preallocations as PreallocationsScreen } from "./screens/Preallocations.tsx";
 import { Review as ReviewScreen, type CommitState } from "./screens/Review.tsx";
 import { Ccas as CcasScreen } from "./screens/Ccas.tsx";
+import { CapCheck as CapCheckScreen } from "./screens/CapCheck.tsx";
+import { CapSettings as CapSettingsScreen } from "./screens/CapSettings.tsx";
 import { TextInput } from "./components/TextInput.tsx";
 
-type Screen = "alloc" | "ccas" | "prealloc" | "review";
+type Screen = "alloc" | "ccas" | "caps" | "capsettings" | "prealloc" | "review";
 type Detail = { type: "applicant" | "position"; id: number } | null;
 type Match = { aid: number; pid: number } | null;
 type Theme = "light" | "dark";
+
+// Placeholder for the empty directory Review falls back to before a sync; never checked against.
+const EMPTY_RULES: CapRules = {
+  academicYear: "",
+  committeeCombos: [],
+  committeeCombosAppealed: [],
+  sportsCultureMax: 0,
+  sportsCultureMaxAppealed: 0,
+  totalMax: 0,
+  totalMaxAppealed: 0,
+  totalMaxBothAppeals: 0,
+  ccaTypes: {},
+};
 
 const initialCommitState: CommitState = {
   previewed: false,
@@ -52,6 +68,8 @@ export interface UiState {
   screen: Screen;
   alloc: AllocState;
   ccaOpen: number | null;
+  /** An Edit member window to open once the CCA page shows; cleared when it does. */
+  memberOpen: MemberRef | null;
   detail: Detail;
   match: Match;
   syncing: boolean;
@@ -69,6 +87,8 @@ export interface UiHandlers {
   setScreen: (s: Screen) => void;
   patchAlloc: (patch: Partial<AllocState>) => void;
   setCcaOpen: (id: number | null) => void;
+  openMember: (member: MemberRef) => void;
+  clearMemberOpen: () => void;
   toast: (kind: ToastKind, text: string) => void;
   setCommitState: (s: CommitState | ((prev: CommitState) => CommitState)) => void;
   setPurgeText: (v: string) => void;
@@ -77,6 +97,9 @@ export interface UiHandlers {
   addAppointment: (userId: number, positionId: number, period: CommitmentPeriod) => Promise<boolean>;
   removeAppointment: (userId: number, positionId: number) => Promise<boolean>;
   updateAppointmentPeriod: (userId: number, positionId: number, period: CommitmentPeriod) => Promise<boolean>;
+  setCapAppeals: (changes: AppealChange[]) => Promise<boolean>;
+  setCapWindow: (window: CapWindow) => Promise<boolean>;
+  setCapRules: (rules: CapRules) => Promise<boolean>;
   applySnapshot: (snap: Snapshot) => void;
 }
 
@@ -89,6 +112,7 @@ function App() {
   const [screen, setScreenState] = useState<Screen>("alloc");
   const [alloc, setAlloc] = useState<AllocState>(initialAllocState);
   const [ccaOpen, setCcaOpen] = useState<number | null>(null);
+  const [memberOpen, setMemberOpen] = useState<MemberRef | null>(null);
   const [detail, setDetail] = useState<Detail>(null);
   const [match, setMatch] = useState<Match>(null);
   const [syncing, setSyncing] = useState(false);
@@ -231,6 +255,9 @@ function App() {
     editDirectory(() => api.removeAppointment(userId, positionId));
   const updateAppointmentPeriod = (userId: number, positionId: number, period: CommitmentPeriod) =>
     editDirectory(() => api.updateAppointmentPeriod(userId, positionId, period));
+  const setCapAppeals = (changes: AppealChange[]) => editDirectory(() => api.setCapAppeals(changes));
+  const setCapWindow = (window: CapWindow) => editDirectory(() => api.setCapWindow(window));
+  const setCapRules = (rules: CapRules) => editDirectory(() => api.setCapRules(rules));
 
   // Verify credentials, adopt the new target, and pull its corpus. The old
   // snapshot dies with the old database; a connect failure leaves everything
@@ -310,6 +337,7 @@ function App() {
   const setScreen = (s: Screen) => {
     setScreenState(s);
     setCcaOpen(null);
+    setMemberOpen(null);
     setDetail(null);
     setMatch(null);
   };
@@ -323,6 +351,14 @@ function App() {
     setScreen("ccas");
     setCcaOpen(id);
   };
+  // Opens the seat's CCA with that person's Edit member window on top.
+  const openMember = (member: MemberRef) => {
+    const ccaId = directory?.positions.find((p) => p.id === member.positionId)?.ccaId;
+    if (ccaId === undefined) return;
+    jumpToCca(ccaId);
+    setMemberOpen(member);
+  };
+  const clearMemberOpen = useCallback(() => setMemberOpen(null), []);
   const jumpToApplicant = (id: number, name: string) => {
     setScreen("alloc");
     setAlloc((prev) => ({ ...prev, view: "applicant", search: name, appFilter: "all", page: 0 }));
@@ -336,6 +372,7 @@ function App() {
     screen,
     alloc,
     ccaOpen,
+    memberOpen,
     detail,
     match,
     syncing,
@@ -353,6 +390,8 @@ function App() {
     setScreen,
     patchAlloc,
     setCcaOpen,
+    openMember,
+    clearMemberOpen,
     toast,
     setCommitState,
     setPurgeText,
@@ -361,6 +400,9 @@ function App() {
     addAppointment,
     removeAppointment,
     updateAppointmentPeriod,
+    setCapAppeals,
+    setCapWindow,
+    setCapRules,
     applySnapshot,
   };
 
@@ -420,6 +462,7 @@ function App() {
           screen={screen}
           setScreen={setScreen}
           ccaCount={directory?.ccas.length ?? null}
+          overCapCount={directory ? directory.committeeCaps.entries.filter((e) => e.overCap || e.overCombinedCap).length : null}
           preallocationCount={snapshot.preallocations.length}
           hasRun={snapshot.run !== null}
           connInfo={connInfo}
@@ -438,6 +481,10 @@ function App() {
             <Allocations ui={ui} handlers={handlers} />
           ) : screen === "ccas" ? (
             <Ccas ui={ui} handlers={handlers} />
+          ) : screen === "caps" ? (
+            <CapCheck ui={ui} handlers={handlers} />
+          ) : screen === "capsettings" ? (
+            <CapSettingsPage ui={ui} handlers={handlers} />
           ) : screen === "prealloc" ? (
             <PreallocationsWrapper ui={ui} handlers={handlers} />
           ) : (
@@ -1022,6 +1069,7 @@ function Sidebar({
   screen,
   setScreen,
   ccaCount,
+  overCapCount,
   preallocationCount,
   hasRun,
   connInfo,
@@ -1033,6 +1081,7 @@ function Sidebar({
   screen: Screen;
   setScreen: (s: Screen) => void;
   ccaCount: number | null;
+  overCapCount: number | null;
   preallocationCount: number;
   hasRun: boolean;
   connInfo: string | null;
@@ -1043,7 +1092,14 @@ function Sidebar({
 }) {
   const runColor = hasRun ? "var(--token-color-foreground-success)" : "var(--token-color-foreground-faint)";
   const groups: { label: string; items: NavItem[] }[] = [
-    { label: "Home", items: [{ id: "ccas", label: "CCAs", icon: "grid", count: ccaCount }] },
+    {
+      label: "Home",
+      items: [
+        { id: "ccas", label: "CCAs", icon: "grid", count: ccaCount },
+        { id: "caps", label: "CCA caps", icon: "alert-triangle", count: overCapCount },
+        { id: "capsettings", label: "Cap settings", icon: "edit" },
+      ],
+    },
     {
       label: "Allocation",
       items: [
@@ -1221,9 +1277,38 @@ function Ccas({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
       directory={ui.directory}
       openCcaId={ui.ccaOpen}
       onOpenCca={handlers.setCcaOpen}
+      openMember={ui.memberOpen}
+      onMemberShown={handlers.clearMemberOpen}
       onAdd={handlers.addAppointment}
       onRemove={handlers.removeAppointment}
       onUpdatePeriod={handlers.updateAppointmentPeriod}
+      onPreviewCap={api.previewCommitteeCap}
+      onOpenProfile={(id) => handlers.openDetail("applicant", id)}
+      toast={handlers.toast}
+    />
+  );
+}
+
+function CapCheck({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
+  if (!ui.directory) return null;
+  return (
+    <CapCheckScreen
+      directory={ui.directory}
+      onSetWindow={handlers.setCapWindow}
+      onOpenMember={handlers.openMember}
+      onOpenProfile={(id) => handlers.openDetail("applicant", id)}
+    />
+  );
+}
+
+function CapSettingsPage({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
+  if (!ui.directory) return null;
+  // Keyed on the saved rules so a save or a sync starts a fresh draft.
+  return (
+    <CapSettingsScreen
+      key={JSON.stringify(ui.directory.committeeCaps.rules)}
+      directory={ui.directory}
+      onSave={handlers.setCapRules}
       toast={handlers.toast}
     />
   );
@@ -1234,7 +1319,7 @@ function Review({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
   return (
     <ReviewScreen
       snapshot={ui.snapshot}
-      directory={ui.directory ?? { users: [], ccas: [], positions: [], appointments: [], changes: [] }}
+      directory={ui.directory ?? { users: [], ccas: [], positions: [], appointments: [], changes: [], committeeCaps: { window: "academic-year", rules: EMPTY_RULES, entries: [], unclassifiedCcas: [] } }}
       idx={ui.idx}
       commitState={ui.commitState}
       purgeText={ui.purgeText}
@@ -1250,7 +1335,7 @@ function Review({ ui, handlers }: { ui: UiState; handlers: UiHandlers }) {
 }
 
 function DetailPage({ ui, handlers, onBack }: { ui: UiState; handlers: UiHandlers; onBack: () => void }) {
-  if (!ui.snapshot || !ui.idx || !ui.detail) return null;
+  if (!ui.snapshot || !ui.idx || !ui.detail || !ui.directory) return null;
   return (
     <DetailPageScreen
       detail={ui.detail}
@@ -1260,6 +1345,10 @@ function DetailPage({ ui, handlers, onBack }: { ui: UiState; handlers: UiHandler
       onBack={onBack}
       onOpenMatch={handlers.openMatch}
       onOpenDetail={handlers.openDetail}
+      directory={ui.directory}
+      loadCaps={api.residentCaps}
+      onSetAppeals={handlers.setCapAppeals}
+      onOpenMember={handlers.openMember}
     />
   );
 }

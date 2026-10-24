@@ -5,13 +5,15 @@
 // The design's position add/edit/delete controls are not ported: positions are
 // read-only until the backend can change and publish them.
 import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
-import { Avatar, Badge, Button, Card, CcaIcon, Icon, TextInput, type BadgeColor } from "../components/index.ts";
+import { Avatar, Badge, Button, CapTags, Card, CcaIcon, Icon, TextInput, type BadgeColor } from "../components/index.ts";
 import { Combo, type ComboOption } from "../components/Combo.tsx";
 import type { ToastKind } from "../components/Toasts.tsx";
 import {
   PERIODS,
   buildDirectoryIndex,
+  capCountText,
   capacityText,
+  committeeCombos,
   isEditable,
   isFull,
   kindLabel,
@@ -21,7 +23,9 @@ import {
   type RemovedHolder,
 } from "../lib/directory.ts";
 import type {
+  CapRules,
   CommitmentPeriod,
+  CommitteeCapEntry,
   DirectoryAppointment,
   DirectoryCca,
   DirectoryPosition,
@@ -30,13 +34,26 @@ import type {
 } from "../lib/types.ts";
 import { ChipRow, EmptyState, PageTitle } from "./shared.tsx";
 
+/** One person's seat: identifies an Edit member window. */
+export interface MemberRef {
+  userId: number;
+  positionId: number;
+}
+
 export interface CcasProps {
   directory: DirectorySnapshot;
   openCcaId: number | null;
   onOpenCca: (id: number | null) => void;
+  /** Open this seat's Edit member window when its CCA shows (from the CCA caps page). */
+  openMember: MemberRef | null;
+  onMemberShown: () => void;
   onAdd: (userId: number, positionId: number, period: CommitmentPeriod) => Promise<boolean>;
   onRemove: (userId: number, positionId: number) => Promise<boolean>;
   onUpdatePeriod: (userId: number, positionId: number, period: CommitmentPeriod) => Promise<boolean>;
+  /** Committee-cap entry as it would be after the add; rejects if Rust would refuse the add. */
+  onPreviewCap: (userId: number, positionId: number, period: CommitmentPeriod) => Promise<CommitteeCapEntry | null>;
+  /** Opens the resident's profile, where cap appeals are approved or withdrawn. */
+  onOpenProfile: (userId: number) => void;
   toast: (kind: ToastKind, text: string) => void;
 }
 
@@ -156,12 +173,27 @@ function CcaDetail({
   onAdd,
   onRemove,
   onUpdatePeriod,
+  onPreviewCap,
+  onOpenProfile,
+  openMember,
+  onMemberShown,
   toast,
 }: CcasProps & { cca: DirectoryCca; dx: DirectoryIndex; onBack: () => void }) {
   const [memSearch, setMemSearch] = useState("");
   const [memType, setMemType] = useState<"all" | DirectoryPositionType>("all");
   const [posOpen, setPosOpen] = useState<Record<number, boolean>>({});
   const [modal, setModal] = useState<Modal | null>(null);
+
+  // Arriving from the CCA caps page: open that person's Edit member window once.
+  useEffect(() => {
+    if (!openMember) return;
+    const held = dx.holdersByPosition.get(openMember.positionId)?.find((a) => a.userId === openMember.userId);
+    const position = dx.positionById.get(openMember.positionId);
+    if (held && position?.ccaId === cca.id && isEditable(position)) {
+      setModal({ mode: "member", userId: held.userId, positionId: held.positionId, period: held.commitmentPeriod, confirm: false });
+    }
+    onMemberShown();
+  }, [openMember, onMemberShown, dx, cca.id]);
   const [busy, setBusy] = useState(false);
 
   const positions = dx.positionsByCca.get(cca.id) ?? [];
@@ -186,6 +218,9 @@ function CcaDetail({
   });
   const setAll = (open: boolean) => setPosOpen(Object.fromEntries(positions.map((p) => [p.id, open])));
   const editable = positions.filter(isEditable);
+  // Cap flags only mean something on seats the caps count.
+  const counted = cca.kind === "committee" || cca.kind === "sports" || cca.kind === "culture";
+  const capOf = (userId: number) => (counted ? dx.capByUser.get(userId) : undefined);
 
   const act = async (run: () => Promise<boolean>, success: string) => {
     setBusy(true);
@@ -218,6 +253,8 @@ function CcaDetail({
               removedRows={removedRows}
               open={open}
               dx={dx}
+              capOf={capOf}
+              onOpenProfile={onOpenProfile}
               onToggle={() => setPosOpen((prev) => ({ ...prev, [p.id]: !open }))}
               onAdd={() => setModal({ mode: "add", userId: null, positionId: p.id, period: "full-year" })}
               onEdit={(a) => setModal({ mode: "member", userId: a.userId, positionId: a.positionId, period: a.commitmentPeriod, confirm: false })}
@@ -341,6 +378,7 @@ function CcaDetail({
           busy={busy}
           onChange={(patch) => setModal((m) => (m ? ({ ...m, ...patch } as Modal) : m))}
           onClose={() => setModal(null)}
+          onPreviewCap={onPreviewCap}
           onSaveAdd={(userId, positionId, period) =>
             void act(
               () => onAdd(userId, positionId, period),
@@ -350,6 +388,7 @@ function CcaDetail({
           onSavePeriod={(userId, positionId, period) =>
             void act(() => onUpdatePeriod(userId, positionId, period), `${nameOf(dx, userId)}'s commitment set to ${periodLabel(period)}. Pending review.`)
           }
+          onOpenProfile={onOpenProfile}
           onRemove={(userId, positionId) =>
             void act(() => onRemove(userId, positionId), `${nameOf(dx, userId)} removed from ${cca.name}. Pending review.`)
           }
@@ -368,6 +407,8 @@ function PositionCard({
   removedRows,
   open,
   dx,
+  capOf,
+  onOpenProfile,
   onToggle,
   onAdd,
   onEdit,
@@ -378,6 +419,8 @@ function PositionCard({
   removedRows: RemovedHolder[];
   open: boolean;
   dx: DirectoryIndex;
+  capOf: (userId: number) => CommitteeCapEntry | undefined;
+  onOpenProfile: (userId: number) => void;
   onToggle: () => void;
   onAdd: () => void;
   onEdit: (a: DirectoryAppointment) => void;
@@ -477,7 +520,14 @@ function PositionCard({
       ) : open ? (
         <div style={wide ? { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" } : undefined}>
           {rows.map((a) => (
-            <MemberRow key={a.userId} appointment={a} dx={dx} onEdit={editable ? () => onEdit(a) : undefined} />
+            <MemberRow
+              key={a.userId}
+              appointment={a}
+              dx={dx}
+              cap={capOf(a.userId)}
+              onOpenProfile={() => onOpenProfile(a.userId)}
+              onEdit={editable ? () => onEdit(a) : undefined}
+            />
           ))}
           {removedRows.map((r) => (
             <RemovedRow key={`removed-${r.userId}`} holder={r} dx={dx} />
@@ -564,7 +614,19 @@ function ChangeTag({ kind }: { kind: keyof typeof CHANGE_TONES }) {
   );
 }
 
-function MemberRow({ appointment, dx, onEdit }: { appointment: DirectoryAppointment; dx: DirectoryIndex; onEdit?: () => void }) {
+function MemberRow({
+  appointment,
+  dx,
+  cap,
+  onOpenProfile,
+  onEdit,
+}: {
+  appointment: DirectoryAppointment;
+  dx: DirectoryIndex;
+  cap?: CommitteeCapEntry;
+  onOpenProfile: () => void;
+  onEdit?: () => void;
+}) {
   const user = dx.userById.get(appointment.userId);
   const name = user?.name ?? `User ${appointment.userId}`;
   const fullYear = appointment.commitmentPeriod === "full-year";
@@ -581,10 +643,20 @@ function MemberRow({ appointment, dx, onEdit }: { appointment: DirectoryAppointm
     >
       <Avatar name={name} size="small" />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ ...ellipsis, fontSize: 13, fontWeight: 600, color: "var(--token-color-foreground-strong)" }}>{name}</div>
+        <button
+          title={`Open ${name}'s profile`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenProfile();
+          }}
+          style={{ ...linkStyle, ...ellipsis, display: "block", maxWidth: "100%", fontSize: 13, color: "var(--token-color-foreground-strong)" }}
+        >
+          {name}
+        </button>
         <div style={{ ...ellipsis, fontSize: 11.5, color: "var(--token-color-foreground-faint)" }}>{user?.email ?? ""}</div>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+        {cap ? <CapTags entry={cap} /> : null}
         {appointment.status !== "existing" ? <ChangeTag kind={appointment.status} /> : null}
         <span
           title="Commitment"
@@ -645,8 +717,10 @@ function MemberModal({
   busy,
   onChange,
   onClose,
+  onPreviewCap,
   onSaveAdd,
   onSavePeriod,
+  onOpenProfile,
   onRemove,
 }: {
   cca: DirectoryCca;
@@ -656,8 +730,10 @@ function MemberModal({
   busy: boolean;
   onChange: (patch: Partial<Modal>) => void;
   onClose: () => void;
+  onPreviewCap: CcasProps["onPreviewCap"];
   onSaveAdd: (userId: number, positionId: number, period: CommitmentPeriod) => void;
   onSavePeriod: (userId: number, positionId: number, period: CommitmentPeriod) => void;
+  onOpenProfile: (userId: number) => void;
   onRemove: (userId: number, positionId: number) => void;
 }) {
   useEffect(() => {
@@ -667,6 +743,26 @@ function MemberModal({
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // Warn, never block: the JCRC can approve exceptions. A refused add (capacity,
+  // CCA conflict) previews as nothing; saving reports the real error.
+  const [capPreview, setCapPreview] = useState<CommitteeCapEntry | null>(null);
+  const addUserId = modal.mode === "add" ? modal.userId : null;
+  const addPositionId = modal.mode === "add" ? modal.positionId : null;
+  const { period: addPeriod } = modal;
+  useEffect(() => {
+    setCapPreview(null);
+    if (addUserId === null || addPositionId === null) return;
+    let live = true;
+    onPreviewCap(addUserId, addPositionId, addPeriod)
+      .then((entry) => {
+        if (live) setCapPreview(entry);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [addUserId, addPositionId, addPeriod, onPreviewCap]);
 
   const commitField = (
     <div>
@@ -689,6 +785,7 @@ function MemberModal({
     const position = dx.positionById.get(modal.positionId);
     const current = dx.holdersByPosition.get(modal.positionId)?.find((a) => a.userId === modal.userId);
     const changed = !!current && current.commitmentPeriod !== modal.period;
+    const cap = dx.capByUser.get(modal.userId);
     title = "Edit member";
     body = (
       <>
@@ -706,6 +803,16 @@ function MemberModal({
           ) : null}
         </div>
         {commitField}
+        <div>
+          <FieldLabel>CCA caps</FieldLabel>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            {cap ? <CapTags entry={cap} /> : null}
+            <span style={{ fontSize: 12, color: "var(--token-color-foreground-faint)" }}>Cap appeals are approved on their profile.</span>
+            <button onClick={() => onOpenProfile(modal.userId)} style={linkStyle}>
+              Open profile
+            </button>
+          </div>
+        </div>
       </>
     );
     footerLeft = modal.confirm ? (
@@ -722,7 +829,13 @@ function MemberModal({
       <CriticalButton label="Remove member" disabled={busy} onClick={() => onChange({ confirm: true })} />
     );
     save = (
-      <Button color="primary" icon="check" busy={busy} disabled={!changed} onClick={() => onSavePeriod(modal.userId, modal.positionId, modal.period)}>
+      <Button
+        color="primary"
+        icon="check"
+        busy={busy}
+        disabled={!changed}
+        onClick={() => onSavePeriod(modal.userId, modal.positionId, modal.period)}
+      >
         Save changes
       </Button>
     );
@@ -767,6 +880,9 @@ function MemberModal({
           </div>
         </div>
         {commitField}
+        {capPreview && (capPreview.overCap || capPreview.overCombinedCap || capPreview.duplicateCcas.length) ? (
+          <CapWarning entry={capPreview} name={selectedUser?.name ?? "This resident"} rules={dx.capRules} />
+        ) : null}
       </>
     );
     save = (
@@ -840,6 +956,55 @@ function MemberModal({
           </Button>
           {save}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function CapWarning({ entry, name, rules }: { entry: CommitteeCapEntry; name: string; rules: CapRules }) {
+  const warn = "var(--token-color-foreground-warning-on-surface)";
+  const committee = entry.counts.filter((c) => (entry.appealed ? c.exceedsAppeal : c.exceedsStandard)).map(capCountText);
+  const overSportsCulture = entry.counts.filter((c) => c.sportsCulture > c.sportsCultureLimit);
+  const overTotal = entry.counts.filter((c) => c.main + c.sub + c.sportsCulture > c.totalLimit);
+  const cap = entry.appealed
+    ? `the committee cap with appeal (${committeeCombos(rules.committeeCombosAppealed)})`
+    : `the committee cap (${committeeCombos(rules.committeeCombos)})`;
+  return (
+    <div
+      role="status"
+      style={{
+        display: "flex",
+        gap: 10,
+        padding: "10px 12px",
+        borderRadius: 8,
+        fontSize: 12.5,
+        lineHeight: 1.45,
+        background: "var(--token-color-surface-warning)",
+        border: "1px solid var(--token-color-border-warning)",
+        color: "var(--token-color-foreground-strong)",
+      }}
+    >
+      <span style={{ display: "flex", paddingTop: 2 }}>
+        <Icon name="alert-triangle" size={14} color={warn} />
+      </span>
+      <div>
+        {entry.overCap ? (
+          <div>
+            This puts {name} over {cap}: <b>{committee.join("; ")}</b>.
+          </div>
+        ) : null}
+        {overSportsCulture.length ? (
+          <div>
+            This puts {name} over the Sports/Culture cap of {overSportsCulture[0].sportsCultureLimit}: <b>{overSportsCulture.map(capCountText).join("; ")}</b>.
+          </div>
+        ) : null}
+        {overTotal.length ? (
+          <div>
+            This puts {name} over the total CCA cap of {overTotal[0].totalLimit}: <b>{overTotal.map(capCountText).join("; ")}</b>.
+          </div>
+        ) : null}
+        {entry.duplicateCcas.length ? <div>{name} would hold two seats in the same committee.</div> : null}
+        <div style={{ color: "var(--token-color-foreground-faint)" }}>You can still add them; they will be flagged on the CCA caps page.</div>
       </div>
     </div>
   );
@@ -981,6 +1146,17 @@ function CriticalButton({ label, onClick, disabled, solid }: { label: string; on
 
 const pageStyle = (maxWidth: number) => ({ padding: "24px 28px 48px", maxWidth, margin: "0 auto" }) as const;
 const ellipsis = { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } as const;
+const linkStyle = {
+  border: "none",
+  background: "transparent",
+  padding: 0,
+  font: "inherit",
+  fontSize: 12.5,
+  fontWeight: 600,
+  textAlign: "left",
+  cursor: "pointer",
+  color: "var(--token-color-foreground-action)",
+} as const;
 const rowStyle = {
   display: "flex",
   alignItems: "center",

@@ -195,6 +195,7 @@ pub struct DirectorySnapshot {
     pub positions: Vec<DirectoryPositionView>,
     pub appointments: Vec<CcaAppointmentView>,
     pub changes: Vec<CcaAppointmentChange>,
+    pub committee_caps: super::CommitteeCapReport,
 }
 
 #[cfg(test)]

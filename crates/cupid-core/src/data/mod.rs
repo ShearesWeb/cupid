@@ -6,6 +6,7 @@ mod resolve;
 mod user_preferences;
 mod users;
 
+pub mod cap_settings;
 pub mod conn;
 pub mod db;
 pub mod preallocations;

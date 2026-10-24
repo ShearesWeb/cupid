@@ -57,12 +57,94 @@ export type DirectoryAppointmentChange =
   | { kind: "remove"; userId: number; positionId: number }
   | { kind: "changePeriod"; userId: number; positionId: number; from: CommitmentPeriod; to: CommitmentPeriod };
 
+export type CapWindow = "academic-year" | "semester";
+
+export interface CommitteeSeat {
+  ccaId: number;
+  positionId: number;
+  level: "main" | "sub";
+}
+
+/** Seat counts for the academic year (`semester: null`) or one semester. */
+export interface CommitteeCapCount {
+  semester: number | null;
+  main: number;
+  sub: number;
+  /** Distinct Sports and Cultural CCAs. */
+  sportsCulture: number;
+  exceedsStandard: boolean;
+  exceedsAppeal: boolean;
+  /** Over the Sports/Culture cap without appeal. */
+  exceedsSportsCulture: boolean;
+  /** The Sports/Culture limit that applies, given their appeals. */
+  sportsCultureLimit: number;
+  /** Over the total cap without appeal. */
+  exceedsTotal: boolean;
+  /** The total limit that applies, given their appeals. */
+  totalLimit: number;
+}
+
+export interface CommitteeCapEntry {
+  userId: number;
+  appealed: boolean;
+  /** Breaks the committee cap that applies: the appeal cap if appealed, else the standard one. */
+  overCap: boolean;
+  combinedAppealed: boolean;
+  /** Breaks the Sports/Culture or total cap that applies to them. */
+  overCombinedCap: boolean;
+  counts: CommitteeCapCount[];
+  duplicateCcas: number[];
+  seats: CommitteeSeat[];
+  sportsCultureCcas: number[];
+}
+
+export type AppealKind = "committee" | "combined";
+
+/** One staged appeal decision; a batch is saved in one write. */
+export interface AppealChange {
+  userId: number;
+  kind: AppealKind;
+  appealed: boolean;
+}
+
+/** One allowed committee holding: at most `main` Main and `sub` Sub seats together. */
+export interface CommitteeCombo {
+  main: number;
+  sub: number;
+}
+
+/** This year's caps and committee types: the Cap settings page. */
+export interface CapRules {
+  academicYear: string;
+  /** Allowed committee holdings; a holding fits inside any one of them. */
+  committeeCombos: CommitteeCombo[];
+  committeeCombosAppealed: CommitteeCombo[];
+  sportsCultureMax: number;
+  sportsCultureMaxAppealed: number;
+  totalMax: number;
+  /** With the CCA cap appeal. */
+  totalMaxAppealed: number;
+  /** With both appeals. */
+  totalMaxBothAppeals: number;
+  /** Type set on the Cap settings page, by CCA ID; overrides the database. */
+  ccaTypes: Record<string, "type-a" | "type-b">;
+}
+
+export interface CommitteeCapReport {
+  window: CapWindow;
+  rules: CapRules;
+  /** Flagged residents only: over either cap, duplicate seat, or appealed. */
+  entries: CommitteeCapEntry[];
+  unclassifiedCcas: number[];
+}
+
 export interface DirectorySnapshot {
   users: DirectoryUser[];
   ccas: DirectoryCca[];
   positions: DirectoryPosition[];
   appointments: DirectoryAppointment[];
   changes: DirectoryAppointmentChange[];
+  committeeCaps: CommitteeCapReport;
 }
 
 export interface CcaView {

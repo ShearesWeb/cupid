@@ -2,22 +2,27 @@
 // Ports reference/cca-console-design.html renderDetailPage (221-227).
 import { Card, Icon } from "../components/index.ts";
 import type { Indexes } from "../lib/indexes.ts";
-import type { Snapshot } from "../lib/types.ts";
+import type { AppealChange, CommitteeCapEntry, DirectorySnapshot, Snapshot } from "../lib/types.ts";
 import { ApplicantDetail } from "./ApplicantDetail.tsx";
+import type { MemberRef } from "./Ccas.tsx";
 import { PositionDetail } from "./PositionDetail.tsx";
 
 export interface DetailPageProps {
   detail: { type: "applicant" | "position"; id: number };
   snapshot: Snapshot;
   idx: Indexes;
-  screen: "alloc" | "ccas" | "prealloc" | "review";
+  screen: "alloc" | "ccas" | "caps" | "capsettings" | "prealloc" | "review";
   onBack: () => void;
   onOpenMatch: (aid: number, pid: number) => void;
   onOpenDetail: (type: "applicant" | "position", id: number) => void;
+  directory: DirectorySnapshot;
+  loadCaps: (userId: number) => Promise<CommitteeCapEntry | null>;
+  onSetAppeals: (changes: AppealChange[]) => Promise<boolean>;
+  onOpenMember: (member: MemberRef) => void;
 }
 
 export function DetailPage(props: DetailPageProps) {
-  const { detail, snapshot, idx, screen, onBack, onOpenMatch } = props;
+  const { detail, snapshot, idx, screen, onBack, onOpenMatch, directory, loadCaps, onSetAppeals, onOpenMember } = props;
   const isApp = detail.type === "applicant";
   return (
     <div style={{ padding: "24px 28px 48px", maxWidth: 860, margin: "0 auto" }}>
@@ -41,11 +46,20 @@ export function DetailPage(props: DetailPageProps) {
         }}
       >
         <Icon name="chevron-left" size={15} color="var(--token-color-foreground-strong)" />
-        Back to {screen === "alloc" ? "allocations" : screen === "ccas" ? "CCAs" : screen === "prealloc" ? "preallocations" : "review"}
+        Back to {screen === "alloc" ? "allocations" : screen === "ccas" ? "CCAs" : screen === "caps" ? "CCA caps" : screen === "capsettings" ? "cap settings" : screen === "prealloc" ? "preallocations" : "review"}
       </button>
       <Card padding="large">
         {isApp ? (
-          <ApplicantDetail aid={detail.id} snapshot={snapshot} idx={idx} onOpenMatch={onOpenMatch} />
+          <ApplicantDetail
+            aid={detail.id}
+            snapshot={snapshot}
+            idx={idx}
+            directory={directory}
+            onOpenMatch={onOpenMatch}
+            loadCaps={loadCaps}
+            onSetAppeals={onSetAppeals}
+            onOpenMember={onOpenMember}
+          />
         ) : (
           <PositionDetail pid={detail.id} snapshot={snapshot} idx={idx} onOpenMatch={onOpenMatch} />
         )}

@@ -2,8 +2,11 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use cupid::data::conn::ConnSpec;
+use cupid::data::cap_settings;
 use cupid::data::preallocations::{self, PreallocationRecord};
-use cupid::directory::{CcaAppointmentChange, CommitmentPeriod, DirectorySnapshot};
+use cupid::directory::{
+    AppealChange, CapRules, CapWindow, CcaAppointmentChange, CommitmentPeriod, CommitteeCapEntry, DirectorySnapshot,
+};
 use cupid::models::{ApplicantIdx, Pool, PositionIdx};
 use cupid::snapshot::AllocationSnapshot;
 use tauri::State;
@@ -142,11 +145,12 @@ async fn spec_of(state: &State<'_, AppState>) -> Result<ConnSpec, String> {
 }
 
 /// Load a complete, fresh input set: the corpus from the database (read-only)
-/// and the preallocations from the local store. Blocking.
-fn load_inputs(spec: &ConnSpec, store: &Path) -> Result<Inputs, String> {
+/// and the preallocations and cap settings from their local files. Blocking.
+fn load_inputs(spec: &ConnSpec, store: &Path, caps: &Path) -> Result<Inputs, String> {
     let loaded = cupid::data::db::load_all(spec).map_err(|e| e.to_string())?;
     let pool = loaded.pool;
     let records = preallocations::read_file(store).map_err(|e| e.to_string())?;
+    let cap_settings = cap_settings::read_file(caps).map_err(|e| e.to_string())?;
     let (preallocations, warnings) = preallocations::resolve(&records, &pool);
     Ok(Inputs {
         base_directory: loaded.directory.clone(),
@@ -155,6 +159,7 @@ fn load_inputs(spec: &ConnSpec, store: &Path) -> Result<Inputs, String> {
         pool,
         records,
         preallocations,
+        cap_settings,
         warnings,
         last_result: None,
         synced_at: now_rfc3339(),
@@ -201,7 +206,8 @@ pub async fn sync(state: State<'_, AppState>) -> Result<AllocationSnapshot, Stri
     let mut guard = state.inputs.lock().await;
     let spec = spec_of(&state).await?;
     let store = state.store_path();
-    let inputs = block_in_place(|| load_inputs(&spec, &store))?;
+    let caps = state.cap_settings_path();
+    let inputs = block_in_place(|| load_inputs(&spec, &store, &caps))?;
     *guard = Some(inputs);
     Ok(snapshot_of(guard.as_ref().expect("just set")))
 }
@@ -271,6 +277,102 @@ pub async fn update_appointment_period(
     inputs.directory = proposed;
     refresh_changes(inputs);
     Ok(directory_snapshot_of(inputs))
+}
+
+/// Save a batch of staged appeal decisions (approve or clear, either cap) in
+/// one write to the local settings file, before the in-memory copy changes.
+#[tauri::command]
+pub async fn set_cap_appeals(
+    state: State<'_, AppState>,
+    changes: Vec<AppealChange>,
+) -> Result<DirectorySnapshot, String> {
+    let mut guard = state.inputs.lock().await;
+    let inputs = guard.as_mut().ok_or("Sync first: no directory loaded.")?;
+    let mut settings = inputs.cap_settings.clone();
+    settings.apply_appeals(&changes);
+    cap_settings::write_file(&state.cap_settings_path(), &settings).map_err(|e| e.to_string())?;
+    inputs.cap_settings = settings;
+    Ok(directory_snapshot_of(inputs))
+}
+
+/// Count committee seats across the academic year or per semester.
+#[tauri::command]
+pub async fn set_cap_window(
+    state: State<'_, AppState>,
+    window: CapWindow,
+) -> Result<DirectorySnapshot, String> {
+    let mut guard = state.inputs.lock().await;
+    let inputs = guard.as_mut().ok_or("Sync first: no directory loaded.")?;
+    let settings = cupid::directory::CapSettings {
+        window,
+        ..inputs.cap_settings.clone()
+    };
+    cap_settings::write_file(&state.cap_settings_path(), &settings).map_err(|e| e.to_string())?;
+    inputs.cap_settings = settings;
+    Ok(directory_snapshot_of(inputs))
+}
+
+/// Replace this year's caps and committee types (the Cap settings page).
+/// Validated, then saved to the local settings file before the in-memory copy
+/// changes; appeals and the counting window are kept.
+#[tauri::command]
+pub async fn set_cap_rules(
+    state: State<'_, AppState>,
+    rules: CapRules,
+) -> Result<DirectorySnapshot, String> {
+    rules.validate()?;
+    let mut guard = state.inputs.lock().await;
+    let inputs = guard.as_mut().ok_or("Sync first: no directory loaded.")?;
+    let settings = cupid::directory::CapSettings {
+        rules,
+        ..inputs.cap_settings.clone()
+    };
+    cap_settings::write_file(&state.cap_settings_path(), &settings).map_err(|e| e.to_string())?;
+    inputs.cap_settings = settings;
+    Ok(directory_snapshot_of(inputs))
+}
+
+/// The resident's cap entry as it would be after adding the seat, without
+/// changing anything. `None` when the seat counts towards neither cap, or the
+/// resident would hold no committee seat. Errors when the add itself would be
+/// refused.
+#[tauri::command]
+pub async fn preview_committee_cap(
+    state: State<'_, AppState>,
+    user_id: i32,
+    position_id: i32,
+    period: CommitmentPeriod,
+) -> Result<Option<CommitteeCapEntry>, String> {
+    let guard = state.inputs.lock().await;
+    let inputs = guard.as_ref().ok_or("Sync first: no directory loaded.")?;
+    let mut proposed = inputs.directory.clone();
+    proposed
+        .add_appointment(user_id, position_id, period)
+        .map_err(|error| error.to_string())?;
+    let position = proposed
+        .position(position_id)
+        .ok_or_else(|| format!("Unknown position: {position_id}."))?;
+    let counts = proposed.cca(position.cca_id).is_some_and(|cca| {
+        inputs.cap_settings.rules.committee_level(cca, position).is_some()
+            || cupid::directory::counts_as_sports_culture(cca, position)
+    });
+    Ok(counts
+        .then(|| proposed.committee_cap_for(user_id, &inputs.cap_settings))
+        .flatten())
+}
+
+/// One resident's cap counts and flags for their profile, flagged or not.
+/// `None` when they hold no committee seat, so neither cap applies.
+#[tauri::command]
+pub async fn resident_caps(
+    state: State<'_, AppState>,
+    user_id: i32,
+) -> Result<Option<CommitteeCapEntry>, String> {
+    let guard = state.inputs.lock().await;
+    let inputs = guard.as_ref().ok_or("Sync first: no directory loaded.")?;
+    Ok(inputs
+        .directory
+        .committee_cap_for(user_id, &inputs.cap_settings))
 }
 
 /// Run the allocation (preallocations, then IA over BlockComm, then GS over
@@ -531,7 +633,8 @@ pub async fn purge(state: State<'_, AppState>, excluded: Vec<i32>) -> Result<Pur
     let store = state.store_path();
     preallocations::write_file(&store, &retained).map_err(|e| e.to_string())?;
 
-    let fresh = block_in_place(|| load_inputs(&spec, &store))?;
+    let caps = state.cap_settings_path();
+    let fresh = block_in_place(|| load_inputs(&spec, &store, &caps))?;
     *guard = Some(fresh);
     Ok(PurgeReceipt {
         deleted,

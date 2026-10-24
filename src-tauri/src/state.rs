@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use cupid::data::conn::ConnSpec;
 use cupid::data::preallocations::PreallocationRecord;
-use cupid::directory::{CcaAppointmentChange, CcaAppointmentChangeSet, Directory};
+use cupid::directory::{CapSettings, CcaAppointmentChange, CcaAppointmentChangeSet, Directory};
 use cupid::models::{MatchResult, Pool, Preallocations};
 use cupid::snapshot::{self, AllocationSnapshot};
 use tokio::sync::Mutex;
@@ -18,6 +18,8 @@ pub struct Inputs {
     pub records: Vec<PreallocationRecord>,
     /// The resolvable subset of `records`, as the algorithm consumes it.
     pub preallocations: Preallocations,
+    /// Committee-cap appeals and counting window, from the local settings file.
+    pub cap_settings: CapSettings,
     /// Load-time anomalies (stale or conflicting preallocation records etc.)
     /// carried into every snapshot.
     pub warnings: Vec<String>,
@@ -53,6 +55,11 @@ impl AppState {
         self.data_dir.join("preallocations.json")
     }
 
+    /// The local committee-cap settings file (appeals and counting window).
+    pub fn cap_settings_path(&self) -> PathBuf {
+        self.data_dir.join("appeals.json")
+    }
+
     /// Where exports clone the intranet repo.
     pub fn export_root(&self) -> PathBuf {
         self.data_dir.join("exports")
@@ -72,7 +79,9 @@ pub fn snapshot_of(inputs: &Inputs) -> AllocationSnapshot {
 }
 
 pub fn directory_snapshot_of(inputs: &Inputs) -> cupid::directory::DirectorySnapshot {
-    inputs.directory.snapshot_with_changes(&inputs.changes)
+    inputs
+        .directory
+        .snapshot_with_changes(&inputs.changes, &inputs.cap_settings)
 }
 
 pub fn refresh_changes(inputs: &mut Inputs) {

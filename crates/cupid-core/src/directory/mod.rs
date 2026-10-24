@@ -1,11 +1,13 @@
 //! Complete CCA directory and validated in-memory appointment management.
 //! Persistence must validate against fresh data and enforce database constraints;
 //! editing this model alone does not write to the database or publish CSVs.
+mod caps;
 mod types;
 
 use std::collections::BTreeMap;
 use std::fmt;
 
+pub use caps::*;
 pub use types::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -308,10 +310,14 @@ impl Directory {
     }
 
     pub fn snapshot(&self) -> DirectorySnapshot {
-        self.snapshot_with_changes(&CcaAppointmentChangeSet::default())
+        self.snapshot_with_changes(&CcaAppointmentChangeSet::default(), &CapSettings::default())
     }
 
-    pub fn snapshot_with_changes(&self, changes: &CcaAppointmentChangeSet) -> DirectorySnapshot {
+    pub fn snapshot_with_changes(
+        &self,
+        changes: &CcaAppointmentChangeSet,
+        caps: &CapSettings,
+    ) -> DirectorySnapshot {
         let changed: std::collections::HashMap<(i32, i32), CcaAppointmentStatus> = changes
             .changes
             .iter()
@@ -354,6 +360,7 @@ impl Directory {
                 })
                 .collect(),
             changes: changes.changes.clone(),
+            committee_caps: self.committee_caps(caps),
         }
     }
 }
