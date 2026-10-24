@@ -7,6 +7,10 @@ edition = "2024"
 name = "cupid"
 path = "src/main.rs"
 
+[[bin]]
+name = "cap_audit"
+path = "src/bin/cap_audit.rs"
+
 [dependencies]
 postgres = "0.19.14"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
